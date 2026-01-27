@@ -69,14 +69,16 @@ class InteractivePolygon:
         # Optional extra instructions to display in the instruction text box
         self.extra_instructions = extra_instructions if extra_instructions is not None else ''
 
-        self.text = self.ax.text(0.02, 0.98, '', transform=self.ax.transAxes, 
-                    verticalalignment='top', bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.8))
-        self.update_instructions()
-        
         # Optional callback invoked when user presses Enter to extract ROI
         self.on_extract = on_extract
         # If True, extract_roi will close the figure (original behavior)
         self.close_on_extract = close_on_extract
+
+        # Create instruction text after mode flags are set so update_instructions
+        # can safely reference `self.close_on_extract`.
+        self.text = self.ax.text(0.02, 0.98, '', transform=self.ax.transAxes,
+                verticalalignment='top', bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.8))
+        self.update_instructions()
 
         # If we loaded vertices, update the plot
         if self.vertices:
@@ -88,11 +90,13 @@ class InteractivePolygon:
             "Left click: Add point (or click on edge to insert)\n"
             "Right click: Remove nearest point\n"
             "Drag: Move point\n"
-            "Enter: Extract ROI\n"
-            "F: Toggle fill (on/off)\n"
-            "C: Clear polygon\n"
-            f"Points: {len(self.vertices)}"
+            f"Points: {len(self.vertices)}\n"
         )
+        # Only show Enter instruction when this selector will perform extract on Enter
+        if self.close_on_extract:
+            instructions = instructions.replace(f"Points: {len(self.vertices)}\n", "Enter: Extract ROI\n" + f"Points: {len(self.vertices)}\n")
+        # Always show other shortcuts
+        instructions += "F: Toggle fill (on/off)\nC: Clear polygon"
         if len(self.vertices) >= 3:
             area = self.calculate_area()
             instructions += f"\nArea: {area:.1f} pixels²"
@@ -210,7 +214,12 @@ class InteractivePolygon:
         elif event.key in ('f', 'F'):
             # Toggle fill on/off
             self.toggle_fill()
-        elif event.key == 'enter' and len(self.vertices) >= 3:  # Extract ROI
+        elif event.key == 'enter' and len(self.vertices) >= 3:
+            # If this polygon is used in subarea selector (has on_extract callback
+            # and is configured to NOT close on extract), ignore Enter key so
+            # selection is only finalized via UI buttons in the subarea selector.
+            if self.on_extract is not None and not self.close_on_extract:
+                return
             self.extract_roi()
 
     def toggle_fill(self):
@@ -561,8 +570,10 @@ def launch_subarea_selector(image, image_path):
 
     # Instruction/legend text for subarea selector (passed into InteractivePolygon)
     sub_instructions = (
+        "Move mouse: Preview pixels above threshold inside current polygon\n"
+        "Release slider: Refresh preview immediately\n"
         "H: Toggle show/hide selected pixels overlay\n"
-        "Enter: Finalize current polygon selection\n"
+        "Use the buttons: 'Save Subareas' to save, 'Finish' to close\n"
         "C: Clear polygon"
     )
 
