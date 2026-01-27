@@ -23,7 +23,7 @@ SKIP_CELL_DETECTION = True
 class InteractivePolygon:
     """Interactive polygon selector for ROI selection"""
     
-    def __init__(self, ax, image, image_path, initial_vertices=None):
+    def __init__(self, ax, image, image_path, initial_vertices=None, on_extract=None, close_on_extract=True):
         self.ax = ax
         self.image = image
         self.image_path = image_path
@@ -43,11 +43,31 @@ class InteractivePolygon:
         self.cid_release = self.ax.figure.canvas.mpl_connect('button_release_event', self.on_release)
         self.cid_motion = self.ax.figure.canvas.mpl_connect('motion_notify_event', self.on_motion)
         self.cid_key = self.ax.figure.canvas.mpl_connect('key_press_event', self.on_key)
+
+        # Disable other key_press_event callbacks on this canvas to avoid
+        # unintended toolbar or global handlers reacting to keypresses
+        try:
+            canvas = self.ax.figure.canvas
+            callbacks = canvas.callbacks.callbacks.get('key_press_event', {})
+            # Disconnect any callback that is not the one we just added.
+            for cid, func in list(callbacks.items()):
+                if cid != self.cid_key:
+                    try:
+                        canvas.mpl_disconnect(cid)
+                    except Exception:
+                        pass
+        except Exception:
+            pass
         
         self.text = self.ax.text(0.02, 0.98, '', transform=self.ax.transAxes, 
                                 verticalalignment='top', bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.8))
         self.update_instructions()
         
+        # Optional callback invoked when user presses Enter to extract ROI
+        self.on_extract = on_extract
+        # If True, extract_roi will close the figure (original behavior)
+        self.close_on_extract = close_on_extract
+
         # If we loaded vertices, update the plot
         if self.vertices:
             self.update_plot()
@@ -233,20 +253,6 @@ class InteractivePolygon:
         if len(self.vertices) < 3:
             print("Need at least 3 points to define a polygon")
             return
-            
-        # Save polygon coordinates to CSV
-        import csv
-        import os
-        base_name = os.path.splitext(self.image_path)[0]
-        csv_path = f"{base_name}_polygon.csv"
-        
-        with open(csv_path, 'w', newline='') as f:
-            writer = csv.writer(f)
-            writer.writerow(['x', 'y'])
-            for vertex in self.vertices:
-                writer.writerow(vertex)
-        print(f"\nPolygon coordinates saved to: {csv_path}")
-            
         # Create mask
         vertices = np.array(self.vertices)
         rr, cc = polygon(vertices[:, 1], vertices[:, 0], self.image.shape)
@@ -290,15 +296,37 @@ class InteractivePolygon:
         self.mask = mask
         self.roi_pixels = roi_pixels
         self.crop_offset = (rmin, cmin)  # Store offset for coordinate mapping
-        
-        # Close the polygon selection window and store ROI for the main flow
-        self.mask = mask
-        self.roi_pixels = roi_pixels
+        # Store additional attributes
         self.masked_img = masked_img
-        self.crop_offset = (rmin, cmin)
         self.area = int(np.sum(mask))
 
-        plt.close(self.ax.figure)
+        # If an on_extract callback is provided, call it instead of closing
+        if callable(self.on_extract):
+            try:
+                # Let the callback handle storing or visualizing the ROI
+                self.on_extract(self)
+            except Exception as e:
+                print(f"on_extract callback raised: {e}")
+
+            # Reset polygon for next selection if we're not closing
+            if not self.close_on_extract:
+                self.vertices = []
+                self.update_plot()
+                return
+
+        # Save polygon coordinates only when closing (original behavior)
+        if self.close_on_extract:
+            import csv
+            base_name = os.path.splitext(self.image_path)[0]
+            csv_path = f"{base_name}_polygon.csv"
+            with open(csv_path, 'w', newline='') as f:
+                writer = csv.writer(f)
+                writer.writerow(['x', 'y'])
+                for vertex in self.vertices:
+                    writer.writerow(vertex)
+            print(f"\nPolygon coordinates saved to: {csv_path}")
+
+            plt.close(self.ax.figure)
         
 
 
@@ -482,12 +510,20 @@ def launch_cell_detector(roi_image, image_path):
 
 
 def launch_subarea_selector(image, image_path):
-    """Open a window to select multiple sub-areas and count pixels above a threshold (module-level)"""
+    """Open a window to select multiple sub-areas using `InteractivePolygon`.
+
+    This creates a single figure with controls (threshold + Save/Finish) and
+    embeds an `InteractivePolygon` on the image axes. Each time the user
+    finishes a polygon (presses Enter), the polygon's `on_extract` callback
+    will be invoked and the polygon will be reset so the user can draw the
+    next sub-area. This ensures identical behavior/appearance to the main
+    ROI selector.
+    """
     fig, ax = plt.subplots(figsize=(10, 8))
     plt.subplots_adjust(bottom=0.25)
     ax.imshow(image, cmap='gray')
     ax.axis('off')
-    ax.set_title('Draw sub-areas (close polygon to finish a selection)')
+    ax.set_title('Draw sub-areas (press Enter to finish each selection)')
 
     vmin = float(np.min(image))
     vmax = float(np.max(image))
@@ -502,7 +538,9 @@ def launch_subarea_selector(image, image_path):
 
     subareas = []
 
-    def onselect(verts):
+    def on_extract_callback(polygon_selector):
+        # polygon_selector is the InteractivePolygon instance
+        verts = polygon_selector.vertices
         try:
             result = InteractivePolygon.compute_roi_from_vertices(image, verts)
         except Exception as e:
@@ -516,79 +554,18 @@ def launch_subarea_selector(image, image_path):
         mean_int = float(result['roi_pixels'].mean()) if result['area'] > 0 else 0.0
         subareas.append({'vertices': np.array(verts).tolist(), 'count': count, 'area': area, 'mean': mean_int, 'threshold': float(thresh)})
 
+        # Draw polygon and label
         patch = Polygon(np.array(verts), fill=False, edgecolor='blue', linewidth=2)
         ax.add_patch(patch)
         ax.text(verts[0][0], verts[0][1], str(count), color='yellow', fontsize=10,
                 bbox=dict(facecolor='black', alpha=0.6))
         fig.canvas.draw_idle()
 
-    selector = PolygonSelector(ax, onselect)
-
-    instr = ax.text(0.02, 0.98, 'Double-click to finish a subarea. Use Save Subareas or Finish. (s=save, f=finish)',
-                    transform=ax.transAxes, verticalalignment='top', bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.6))
-
-    cursor_point, = ax.plot([], [], 'ro', markersize=8, markeredgecolor='white', markeredgewidth=1.5)
-
-    def on_motion_sub(event):
-        try:
-            if event.inaxes == ax and event.xdata is not None and event.ydata is not None:
-                cursor_point.set_data(event.xdata, event.ydata)
-                cursor_point.set_visible(True)
-            else:
-                cursor_point.set_visible(False)
-                cursor_point.set_data([], [])
-            fig.canvas.draw_idle()
-        except Exception:
-            pass
-
-    cid_motion_sub = fig.canvas.mpl_connect('motion_notify_event', on_motion_sub)
-
-    def on_key(event):
-        if event.key == 's':
-            save_subareas(None)
-        elif event.key == 'f':
-            finish(None)
-
-    key_cid = fig.canvas.mpl_connect('key_press_event', on_key)
-
-    widget_axes = [ax_save, ax_finish, ax_thresh]
-
-    def on_axes_enter(event):
-        try:
-            if event.inaxes in widget_axes:
-                selector.set_active(False)
-            else:
-                selector.set_active(True)
-        except Exception:
-            pass
-
-    def on_axes_leave(event):
-        try:
-            selector.set_active(True)
-        except Exception:
-            pass
-
-    cid_enter = fig.canvas.mpl_connect('axes_enter_event', on_axes_enter)
-    cid_leave = fig.canvas.mpl_connect('axes_leave_event', on_axes_leave)
-
-    def canvas_click(event):
-        if event.button != 1:
-            return
-        if event.inaxes == ax_save:
-            save_subareas(None)
-            return
-        if event.inaxes == ax_finish:
-            finish(None)
-            return
-
-    cid_click = fig.canvas.mpl_connect('button_press_event', canvas_click)
-
-    try:
-        if hasattr(selector, '_line') and selector._line is not None:
-            selector._line.set_color('cyan')
-            selector._line.set_linewidth(1.5)
-    except Exception:
-        pass
+    # Create an InteractivePolygon on the image axes that does NOT close the
+    # figure when the user finishes a polygon; instead it calls
+    # `on_extract_callback` and resets for another selection.
+    selector = InteractivePolygon(ax, image, image_path, initial_vertices=None,
+                                  on_extract=on_extract_callback, close_on_extract=False)
 
     def save_subareas(event):
         if len(subareas) == 0:
@@ -605,35 +582,12 @@ def launch_subarea_selector(image, image_path):
         messagebox.showinfo('Save Complete', f"Subarea results saved to:\n{os.path.basename(csv_path)}")
 
     def finish(event):
-        try:
-            selector.disconnect_events()
-        except Exception:
-            pass
-        try:
-            fig.canvas.mpl_disconnect(key_cid)
-        except Exception:
-            pass
-        try:
-            fig.canvas.mpl_disconnect(cid_enter)
-        except Exception:
-            pass
-        try:
-            fig.canvas.mpl_disconnect(cid_leave)
-        except Exception:
-            pass
-        try:
-            fig.canvas.mpl_disconnect(cid_click)
-        except Exception:
-            pass
-        try:
-            fig.canvas.mpl_disconnect(cid_motion_sub)
-        except Exception:
-            pass
-
         plt.close(fig)
 
     btn_save.on_clicked(save_subareas)
     btn_finish.on_clicked(finish)
+
+
 
     plt.show()
 
