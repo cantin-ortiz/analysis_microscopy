@@ -7,7 +7,7 @@ from skimage import io
 from matplotlib import pyplot as plt
 from matplotlib.patches import Polygon, Circle
 from matplotlib.lines import Line2D
-from matplotlib.widgets import Slider, Button
+from matplotlib.widgets import Slider, Button, PolygonSelector
 from skimage.draw import polygon
 from cellpose import models
 import csv
@@ -193,6 +193,40 @@ class InteractivePolygon:
         self.update_instructions()
         self.ax.figure.canvas.draw_idle()
         self.ax.figure.canvas.flush_events()  # Process events immediately
+
+    @staticmethod
+    def compute_roi_from_vertices(image, vertices):
+        """Compute mask, cropped image and ROI statistics from polygon vertices.
+
+        Returns a dict with keys: mask, roi_pixels, masked_img, area, bbox (rmin,rmax,cmin,cmax)
+        """
+        vertices = np.array(vertices)
+        rr, cc = polygon(vertices[:, 1], vertices[:, 0], image.shape)
+        mask = np.zeros(image.shape, dtype=bool)
+        mask[rr, cc] = True
+
+        rows = np.any(mask, axis=1)
+        cols = np.any(mask, axis=0)
+        if not rows.any() or not cols.any():
+            return {'mask': mask, 'roi_pixels': np.array([]), 'masked_img': np.zeros((0, 0)), 'area': 0, 'bbox': (0,0,0,0)}
+        rmin, rmax = np.where(rows)[0][[0, -1]]
+        cmin, cmax = np.where(cols)[0][[0, -1]]
+
+        cropped_image = image[rmin:rmax+1, cmin:cmax+1]
+        cropped_mask = mask[rmin:rmax+1, cmin:cmax+1]
+        masked_img = cropped_image.copy()
+        masked_img[~cropped_mask] = 0
+
+        roi_pixels = image[mask]
+        area = int(np.sum(mask))
+
+        return {
+            'mask': mask,
+            'roi_pixels': roi_pixels,
+            'masked_img': masked_img,
+            'area': area,
+            'bbox': (rmin, rmax, cmin, cmax)
+        }
         
     def extract_roi(self):
         """Extract pixels within the polygon"""
@@ -257,235 +291,351 @@ class InteractivePolygon:
         self.roi_pixels = roi_pixels
         self.crop_offset = (rmin, cmin)  # Store offset for coordinate mapping
         
-        # Close the polygon selection window
+        # Close the polygon selection window and store ROI for the main flow
+        self.mask = mask
+        self.roi_pixels = roi_pixels
+        self.masked_img = masked_img
+        self.crop_offset = (rmin, cmin)
+        self.area = int(np.sum(mask))
+
         plt.close(self.ax.figure)
         
-        # Launch cell detection interface
-        if not SKIP_CELL_DETECTION:
-            self.launch_cell_detector(masked_img)
-        else:
-            print("\nCell detection skipped (SKIP_CELL_DETECTION = True)")
-            print("Change SKIP_CELL_DETECTION to False to enable cell counting.")
-        
-    def launch_cell_detector(self, roi_image):
-        """Launch interactive cell detection interface"""
-        # Create new figure for cell detection
-        fig, ax = plt.subplots(figsize=(12, 10))
-        plt.subplots_adjust(bottom=0.25)
-        
-        # Initial parameters for Cellpose
-        initial_diameter = 30  # Expected cell diameter in pixels
-        initial_flow_threshold = 0.4  # Detection confidence (0.1-2.0)
-        initial_cellprob_threshold = 0.0  # Cell probability threshold
-        initial_min_size = 100  # Filter: min area in pixels²
-        
-        # Store detection parameters and results
-        self.detection_params = {
-            'diameter': initial_diameter,
-            'flow_threshold': initial_flow_threshold,
-            'cellprob_threshold': initial_cellprob_threshold,
-            'min_size': initial_min_size
-        }
-        
-        # Display image
-        self.det_image = roi_image
-        self.det_ax = ax
-        self.det_im = ax.imshow(roi_image, cmap='gray')
-        self.det_circles = []
-        
-        # Initialize outline visibility
-        self.outlines_visible = True
-        
-        # Initial detection
-        self.detect_cells()
-        
-        # Create sliders
-        ax_diameter = plt.axes([0.15, 0.15, 0.7, 0.03])
-        ax_flow = plt.axes([0.15, 0.11, 0.7, 0.03])
-        ax_cellprob = plt.axes([0.15, 0.07, 0.7, 0.03])
-        ax_min_size = plt.axes([0.15, 0.03, 0.7, 0.03])
-        
-        self.slider_diameter = Slider(ax_diameter, 'Cell Diameter (px)', 5, 100, 
-                                        valinit=initial_diameter, valstep=1)
-        self.slider_flow = Slider(ax_flow, 'Flow Threshold', 0.1, 2.0, 
-                                        valinit=initial_flow_threshold, valstep=0.05)
-        self.slider_cellprob = Slider(ax_cellprob, 'Cell Prob Threshold', -6, 6, 
-                                        valinit=initial_cellprob_threshold, valstep=0.5)
-        self.slider_min_size = Slider(ax_min_size, 'Min Area (px²)', 10, 1000, 
-                                       valinit=initial_min_size, valstep=10)
-        
-        # Add buttons
-        ax_detect = plt.axes([0.60, 0.90, 0.15, 0.05])
-        ax_save = plt.axes([0.80, 0.90, 0.15, 0.05])
-        self.btn_detect = Button(ax_detect, 'Recompute')
-        self.btn_save = Button(ax_save, 'Save Results')
-        
-        # Connect buttons
-        self.btn_detect.on_clicked(self.update_detection)
-        self.btn_save.on_clicked(self.save_cell_detection)
-        
-        # Connect key press event for toggling outlines
-        self.cid_key_det = fig.canvas.mpl_connect('key_press_event', self.on_key_det)
-        
-        plt.show()
-        
-    def detect_cells(self):
-        """Detect cells using Cellpose"""
+
+
+# Module-level CELLPOSE model cache
+CELLPOSE_MODEL = None
+
+
+def launch_cell_detector(roi_image, image_path):
+    """Launch interactive cell detection interface (module-level)"""
+    global CELLPOSE_MODEL
+
+    # Create new figure for cell detection
+    fig, ax = plt.subplots(figsize=(12, 10))
+    plt.subplots_adjust(bottom=0.25)
+
+    # Initial parameters for Cellpose
+    initial_diameter = 30
+    initial_flow_threshold = 0.4
+    initial_cellprob_threshold = 0.0
+    initial_min_size = 100
+
+    detection_params = {
+        'diameter': initial_diameter,
+        'flow_threshold': initial_flow_threshold,
+        'cellprob_threshold': initial_cellprob_threshold,
+        'min_size': initial_min_size
+    }
+
+    det_image = roi_image
+    det_ax = ax
+    det_im = ax.imshow(roi_image, cmap='gray')
+    det_circles = []
+    outlines_visible = True
+    detected_cells = np.empty((0, 4))
+
+    def detect_cells():
+        nonlocal det_circles, detected_cells
         # Remove previous circles
-        for circle in self.det_circles:
+        for circle in det_circles:
             circle.remove()
-        self.det_circles = []
-        
+        det_circles = []
+
         # Initialize Cellpose model
-        if not hasattr(self, 'cellpose_model'):
+        global CELLPOSE_MODEL
+        if CELLPOSE_MODEL is None:
             print("Loading Cellpose model (first run may take a moment)...")
-            self.cellpose_model = models.CellposeModel(gpu=True)
-            print(f"Cellpose will use GPU: {self.cellpose_model.gpu}")
-        
-        # Run Cellpose segmentation
+            CELLPOSE_MODEL = models.CellposeModel(gpu=True)
+            print(f"Cellpose will use GPU: {CELLPOSE_MODEL.gpu}")
+
         print("Running Cellpose segmentation (this may take 30-60 seconds on CPU)...")
-        result = self.cellpose_model.eval(
-            self.det_image,
-            diameter=self.detection_params['diameter'],
-            flow_threshold=self.detection_params['flow_threshold'],
-            cellprob_threshold=self.detection_params['cellprob_threshold']
+        result = CELLPOSE_MODEL.eval(
+            det_image,
+            diameter=detection_params['diameter'],
+            flow_threshold=detection_params['flow_threshold'],
+            cellprob_threshold=detection_params['cellprob_threshold']
         )
-        
-        # Handle different return formats (version dependent)
+
         if len(result) == 4:
             masks, flows, styles, diams = result
         else:
             masks = result[0]
-        
-        # Extract cell properties from masks
+
         from skimage.measure import regionprops
         regions = regionprops(masks)
-        
-        # Filter by area
-        min_area = self.detection_params['min_size']
+
+        min_area = detection_params['min_size']
         filtered_cells = []
-        
+
         for region in regions:
             if region.area >= min_area:
                 y, x = region.centroid
-                # Approximate radius from area
                 r = np.sqrt(region.area / np.pi)
                 filtered_cells.append((y, x, r, region.area))
-        
-        self.detected_cells = np.array(filtered_cells) if len(filtered_cells) > 0 else np.empty((0, 4))
-        
-        # Draw circles on detected cells
+
+        detected_cells = np.array(filtered_cells) if len(filtered_cells) > 0 else np.empty((0, 4))
+
         for y, x, r, area in filtered_cells:
-            circle = Circle((x, y), r, fill=False, 
-                           edgecolor='red', linewidth=2, alpha=0.8)
-            self.det_ax.add_patch(circle)
-            self.det_circles.append(circle)
-        
-        # Set visibility based on current state
-        for circle in self.det_circles:
-            circle.set_visible(self.outlines_visible)
-        
-        # Update title with count and outline status
-        status = "VISIBLE" if self.outlines_visible else "HIDDEN"
-        self.det_ax.set_title(f'Cell Detection (Cellpose): {len(filtered_cells)} cells detected - Outlines {status}', 
-                             fontsize=14, fontweight='bold')
-        self.det_ax.axis('off')
-        
+            circle = Circle((x, y), r, fill=False, edgecolor='red', linewidth=2, alpha=0.8)
+            det_ax.add_patch(circle)
+            det_circles.append(circle)
+
+        for circle in det_circles:
+            circle.set_visible(outlines_visible)
+
+        status = "VISIBLE" if outlines_visible else "HIDDEN"
+        det_ax.set_title(f'Cell Detection (Cellpose): {len(filtered_cells)} cells detected - Outlines {status}', 
+                         fontsize=14, fontweight='bold')
+        det_ax.axis('off')
         print(f"\nDetected {len(filtered_cells)} cells using Cellpose")
-        
-    def update_detection(self, val):
-        """Update cell detection when slider values change"""
-        # Update button to show computing state
-        self.btn_detect.label.set_text('Computing...')
-        self.btn_detect.color = 'orange'
-        self.btn_detect.hovercolor = 'orange'
-        self.btn_detect.ax.figure.canvas.draw()
-        self.btn_detect.ax.figure.canvas.flush_events()
-        plt.pause(0.1)  # Force GUI update before computation
-        
-        # Update parameters
-        self.detection_params['diameter'] = self.slider_diameter.val
-        self.detection_params['flow_threshold'] = self.slider_flow.val
-        self.detection_params['cellprob_threshold'] = self.slider_cellprob.val
-        self.detection_params['min_size'] = self.slider_min_size.val
-        
-        # Run detection
-        self.detect_cells()
-        
-        # Reset button
-        self.btn_detect.label.set_text('Recompute')
-        self.btn_detect.color = '0.85'
-        self.btn_detect.hovercolor = '0.95'
+
+    # Create sliders
+    ax_diameter = plt.axes([0.15, 0.15, 0.7, 0.03])
+    ax_flow = plt.axes([0.15, 0.11, 0.7, 0.03])
+    ax_cellprob = plt.axes([0.15, 0.07, 0.7, 0.03])
+    ax_min_size = plt.axes([0.15, 0.03, 0.7, 0.03])
+
+    slider_diameter = Slider(ax_diameter, 'Cell Diameter (px)', 5, 100, valinit=initial_diameter, valstep=1)
+    slider_flow = Slider(ax_flow, 'Flow Threshold', 0.1, 2.0, valinit=initial_flow_threshold, valstep=0.05)
+    slider_cellprob = Slider(ax_cellprob, 'Cell Prob Threshold', -6, 6, valinit=initial_cellprob_threshold, valstep=0.5)
+    slider_min_size = Slider(ax_min_size, 'Min Area (px²)', 10, 1000, valinit=initial_min_size, valstep=10)
+
+    ax_detect = plt.axes([0.60, 0.90, 0.15, 0.05])
+    ax_save = plt.axes([0.80, 0.90, 0.15, 0.05])
+    btn_detect = Button(ax_detect, 'Recompute')
+    btn_save = Button(ax_save, 'Save Results')
+
+    def update_detection(val):
+        nonlocal detection_params
+        btn_detect.label.set_text('Computing...')
+        btn_detect.color = 'orange'
+        btn_detect.hovercolor = 'orange'
+        btn_detect.ax.figure.canvas.draw()
+        btn_detect.ax.figure.canvas.flush_events()
+        plt.pause(0.1)
+
+        detection_params['diameter'] = slider_diameter.val
+        detection_params['flow_threshold'] = slider_flow.val
+        detection_params['cellprob_threshold'] = slider_cellprob.val
+        detection_params['min_size'] = slider_min_size.val
+
+        detect_cells()
+
+        btn_detect.label.set_text('Recompute')
+        btn_detect.color = '0.85'
+        btn_detect.hovercolor = '0.95'
         plt.draw()
-        
-    def save_cell_detection(self, event):
-        """Save cell detection results to CSV"""
-        import csv
-        import os
-        
-        if len(self.detected_cells) == 0:
+
+    def save_cell_detection(event):
+        nonlocal detected_cells, detection_params
+        if len(detected_cells) == 0:
             print("No cells detected to save")
             return
-            
-        base_name = os.path.splitext(self.image_path)[0]
+        base_name = os.path.splitext(image_path)[0]
         csv_path = f"{base_name}_cells.csv"
-        
         with open(csv_path, 'w', newline='') as f:
             writer = csv.writer(f)
             writer.writerow(['cell_id', 'x', 'y', 'radius', 'area'])
-            for idx, cell in enumerate(self.detected_cells, 1):
+            for idx, cell in enumerate(detected_cells, 1):
                 y, x, r, area = cell
                 writer.writerow([idx, x, y, r, area])
-        
-        # Save Cellpose settings to separate CSV
+
         settings_csv_path = f"{base_name}_settings.csv"
         with open(settings_csv_path, 'w', newline='') as f:
             writer = csv.writer(f)
             writer.writerow(['parameter', 'value'])
-            for param, value in self.detection_params.items():
+            for param, value in detection_params.items():
                 writer.writerow([param, value])
-        
+
         print(f"\nCell detection results saved to: {csv_path}")
         print(f"Cellpose settings saved to: {settings_csv_path}")
-        print(f"Total cells: {len(self.detected_cells)}")
-        print(f"Parameters used:")
-        print(f"  Cell diameter: {self.detection_params['diameter']} px")
-        print(f"  Flow threshold: {self.detection_params['flow_threshold']}")
-        print(f"  Cell prob threshold: {self.detection_params['cellprob_threshold']}")
-        print(f"  Min size: {self.detection_params['min_size']} px²")        
-        # Show confirmation in the matplotlib window
-        
-        # Create a hidden root window for the dialog
+
         root = tk.Tk()
-        root.withdraw()  # Hide the main window
-        
+        root.withdraw()
         messagebox.showinfo(
             "Save Complete",
-            f"Files saved successfully!\n\n"
-            f"📊 Cell data: {os.path.basename(csv_path)}\n"
-            f"⚙️ Settings: {os.path.basename(settings_csv_path)}\n\n"
-            f"Total cells detected: {len(self.detected_cells)}",
+            f"Files saved successfully!\n\n📊 Cell data: {os.path.basename(csv_path)}\n⚙️ Settings: {os.path.basename(settings_csv_path)}\n\nTotal cells detected: {len(detected_cells)}",
             parent=None
         )
-        
-        root.destroy()  # Clean up        
-    def on_key_det(self, event):
-        """Handle key press in cell detection interface"""
-        if event.key == 'h':  # Toggle hide/show outlines
-            self.toggle_outlines()
-            
-    def toggle_outlines(self):
-        """Toggle visibility of cell outlines"""
-        self.outlines_visible = not self.outlines_visible
-        for circle in self.det_circles:
-            circle.set_visible(self.outlines_visible)
-        
-        # Update title to indicate status
-        status = "VISIBLE" if self.outlines_visible else "HIDDEN"
-        title = f'Cell Detection (Cellpose): {len(self.detected_cells)} cells detected - Outlines {status}'
-        self.det_ax.set_title(title, fontsize=14, fontweight='bold')
-        
-        self.det_ax.figure.canvas.draw_idle()
+        root.destroy()
+
+    def on_key_det(event):
+        nonlocal outlines_visible
+        if event.key == 'h':
+            outlines_visible = not outlines_visible
+            for circle in det_circles:
+                circle.set_visible(outlines_visible)
+            status = "VISIBLE" if outlines_visible else "HIDDEN"
+            det_ax.set_title(f'Cell Detection (Cellpose): {len(detected_cells)} cells detected - Outlines {status}', fontsize=14, fontweight='bold')
+            det_ax.figure.canvas.draw_idle()
+
+    btn_detect.on_clicked(update_detection)
+    btn_save.on_clicked(save_cell_detection)
+    cid_key_det = fig.canvas.mpl_connect('key_press_event', on_key_det)
+
+    # Initial detection
+    detect_cells()
+
+    plt.show()
+
+    # After detection window closes, control returns to main flow
+
+
+def launch_subarea_selector(image, image_path):
+    """Open a window to select multiple sub-areas and count pixels above a threshold (module-level)"""
+    fig, ax = plt.subplots(figsize=(10, 8))
+    plt.subplots_adjust(bottom=0.25)
+    ax.imshow(image, cmap='gray')
+    ax.axis('off')
+    ax.set_title('Draw sub-areas (close polygon to finish a selection)')
+
+    vmin = float(np.min(image))
+    vmax = float(np.max(image))
+    init_thresh = (vmin + vmax) / 2.0
+    ax_thresh = plt.axes([0.15, 0.10, 0.7, 0.03])
+    slider_thresh = Slider(ax_thresh, 'Threshold', vmin, vmax, valinit=init_thresh)
+
+    ax_save = plt.axes([0.80, 0.90, 0.15, 0.05])
+    ax_finish = plt.axes([0.60, 0.90, 0.15, 0.05])
+    btn_save = Button(ax_save, 'Save Subareas')
+    btn_finish = Button(ax_finish, 'Finish')
+
+    subareas = []
+
+    def onselect(verts):
+        try:
+            result = InteractivePolygon.compute_roi_from_vertices(image, verts)
+        except Exception as e:
+            print(f"Error computing ROI from vertices: {e}")
+            return
+
+        thresh = slider_thresh.val
+        mask = result['mask']
+        count = int(np.sum(image[mask] > thresh))
+        area = result['area']
+        mean_int = float(result['roi_pixels'].mean()) if result['area'] > 0 else 0.0
+        subareas.append({'vertices': np.array(verts).tolist(), 'count': count, 'area': area, 'mean': mean_int, 'threshold': float(thresh)})
+
+        patch = Polygon(np.array(verts), fill=False, edgecolor='blue', linewidth=2)
+        ax.add_patch(patch)
+        ax.text(verts[0][0], verts[0][1], str(count), color='yellow', fontsize=10,
+                bbox=dict(facecolor='black', alpha=0.6))
+        fig.canvas.draw_idle()
+
+    selector = PolygonSelector(ax, onselect)
+
+    instr = ax.text(0.02, 0.98, 'Double-click to finish a subarea. Use Save Subareas or Finish. (s=save, f=finish)',
+                    transform=ax.transAxes, verticalalignment='top', bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.6))
+
+    cursor_point, = ax.plot([], [], 'ro', markersize=8, markeredgecolor='white', markeredgewidth=1.5)
+
+    def on_motion_sub(event):
+        try:
+            if event.inaxes == ax and event.xdata is not None and event.ydata is not None:
+                cursor_point.set_data(event.xdata, event.ydata)
+                cursor_point.set_visible(True)
+            else:
+                cursor_point.set_visible(False)
+                cursor_point.set_data([], [])
+            fig.canvas.draw_idle()
+        except Exception:
+            pass
+
+    cid_motion_sub = fig.canvas.mpl_connect('motion_notify_event', on_motion_sub)
+
+    def on_key(event):
+        if event.key == 's':
+            save_subareas(None)
+        elif event.key == 'f':
+            finish(None)
+
+    key_cid = fig.canvas.mpl_connect('key_press_event', on_key)
+
+    widget_axes = [ax_save, ax_finish, ax_thresh]
+
+    def on_axes_enter(event):
+        try:
+            if event.inaxes in widget_axes:
+                selector.set_active(False)
+            else:
+                selector.set_active(True)
+        except Exception:
+            pass
+
+    def on_axes_leave(event):
+        try:
+            selector.set_active(True)
+        except Exception:
+            pass
+
+    cid_enter = fig.canvas.mpl_connect('axes_enter_event', on_axes_enter)
+    cid_leave = fig.canvas.mpl_connect('axes_leave_event', on_axes_leave)
+
+    def canvas_click(event):
+        if event.button != 1:
+            return
+        if event.inaxes == ax_save:
+            save_subareas(None)
+            return
+        if event.inaxes == ax_finish:
+            finish(None)
+            return
+
+    cid_click = fig.canvas.mpl_connect('button_press_event', canvas_click)
+
+    try:
+        if hasattr(selector, '_line') and selector._line is not None:
+            selector._line.set_color('cyan')
+            selector._line.set_linewidth(1.5)
+    except Exception:
+        pass
+
+    def save_subareas(event):
+        if len(subareas) == 0:
+            print('No subareas to save')
+            return
+        base_name = os.path.splitext(image_path)[0]
+        csv_path = f"{base_name}_subareas.csv"
+        with open(csv_path, 'w', newline='') as f:
+            writer = csv.writer(f)
+            writer.writerow(['subarea_id', 'count_above_threshold', 'area_pixels', 'mean_intensity', 'threshold', 'vertices'])
+            for idx, sa in enumerate(subareas, 1):
+                writer.writerow([idx, sa['count'], sa['area'], sa['mean'], sa['threshold'], sa['vertices']])
+        print(f"Subarea results saved to: {csv_path}")
+        messagebox.showinfo('Save Complete', f"Subarea results saved to:\n{os.path.basename(csv_path)}")
+
+    def finish(event):
+        try:
+            selector.disconnect_events()
+        except Exception:
+            pass
+        try:
+            fig.canvas.mpl_disconnect(key_cid)
+        except Exception:
+            pass
+        try:
+            fig.canvas.mpl_disconnect(cid_enter)
+        except Exception:
+            pass
+        try:
+            fig.canvas.mpl_disconnect(cid_leave)
+        except Exception:
+            pass
+        try:
+            fig.canvas.mpl_disconnect(cid_click)
+        except Exception:
+            pass
+        try:
+            fig.canvas.mpl_disconnect(cid_motion_sub)
+        except Exception:
+            pass
+
+        plt.close(fig)
+
+    btn_save.on_clicked(save_subareas)
+    btn_finish.on_clicked(finish)
+
+    plt.show()
 
 
 # Load the TIFF image
@@ -564,3 +714,19 @@ selector = InteractivePolygon(ax, image, image_path, initial_vertices)
 
 plt.tight_layout()
 plt.show()
+
+# After polygon selection window closes, continue sequentially
+if hasattr(selector, 'masked_img') and getattr(selector, 'masked_img') is not None:
+    if not SKIP_CELL_DETECTION:
+        launch_cell_detector(selector.masked_img, image_path)
+    else:
+        print("\nCell detection skipped (SKIP_CELL_DETECTION = True)")
+        print("Opening subarea selector for pixel-threshold counts.")
+
+    # Always open subarea selector after optional detection
+    try:
+        launch_subarea_selector(selector.masked_img, image_path)
+    except Exception as e:
+        print(f"Failed to launch subarea selector: {e}")
+else:
+    print("No ROI selected. Exiting.")
