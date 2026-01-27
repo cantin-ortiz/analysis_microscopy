@@ -32,9 +32,16 @@ class InteractivePolygon:
         self.points = None
         self.dragging_point = None
         self.epsilon = 10  # pixels for point selection
+        # Fill toggle state (press 'f' to toggle)
+        self.fill_enabled = True
+        self.fill_alpha = 0.3
+        # Colors for face and edge (store separately so edge remains visible)
+        self.face_rgb = (1.0, 1.0, 0.0)  # yellow
+        self.edgecolor = 'red'
         
         # Create polygon and points artists
-        self.polygon = Polygon(np.empty((0, 2)), fill=True, alpha=0.3, facecolor='yellow', edgecolor='red', linewidth=2)
+        facecolor = (*self.face_rgb, self.fill_alpha) if self.fill_enabled else 'none'
+        self.polygon = Polygon(np.empty((0, 2)), fill=self.fill_enabled, facecolor=facecolor, edgecolor=self.edgecolor, linewidth=2)
         self.ax.add_patch(self.polygon)
         self.points, = self.ax.plot([], [], 'ro', markersize=8, markeredgecolor='white', markeredgewidth=1.5)
         
@@ -79,6 +86,7 @@ class InteractivePolygon:
             "Right click: Remove nearest point\n"
             "Drag: Move point\n"
             "Enter: Extract ROI\n"
+            "F: Toggle fill (on/off)\n"
             "C: Clear polygon\n"
             f"Points: {len(self.vertices)}"
         )
@@ -194,8 +202,27 @@ class InteractivePolygon:
         if event.key == 'c':  # Clear polygon
             self.vertices = []
             self.update_plot()
+        elif event.key in ('f', 'F'):
+            # Toggle fill on/off
+            self.toggle_fill()
         elif event.key == 'enter' and len(self.vertices) >= 3:  # Extract ROI
             self.extract_roi()
+
+    def toggle_fill(self):
+        """Toggle polygon fill visibility/alpha"""
+        self.fill_enabled = not self.fill_enabled
+        try:
+            if self.fill_enabled:
+                self.polygon.set_fill(True)
+                self.polygon.set_facecolor((*self.face_rgb, self.fill_alpha))
+            else:
+                # Disable face fill but keep edge visible
+                self.polygon.set_fill(False)
+                self.polygon.set_facecolor('none')
+        except Exception:
+            pass
+        self.update_instructions()
+        self.ax.figure.canvas.draw_idle()
             
     def update_plot(self):
         """Update polygon and points visualization"""
