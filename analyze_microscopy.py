@@ -23,7 +23,7 @@ SKIP_CELL_DETECTION = True
 class InteractivePolygon:
     """Interactive polygon selector for ROI selection"""
     
-    def __init__(self, ax, image, image_path, initial_vertices=None, on_extract=None, close_on_extract=True):
+    def __init__(self, ax, image, image_path, initial_vertices=None, on_extract=None, close_on_extract=True, extra_instructions=None):
         self.ax = ax
         self.image = image
         self.image_path = image_path
@@ -66,8 +66,11 @@ class InteractivePolygon:
         except Exception:
             pass
         
+        # Optional extra instructions to display in the instruction text box
+        self.extra_instructions = extra_instructions if extra_instructions is not None else ''
+
         self.text = self.ax.text(0.02, 0.98, '', transform=self.ax.transAxes, 
-                                verticalalignment='top', bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.8))
+                    verticalalignment='top', bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.8))
         self.update_instructions()
         
         # Optional callback invoked when user presses Enter to extract ROI
@@ -93,6 +96,8 @@ class InteractivePolygon:
         if len(self.vertices) >= 3:
             area = self.calculate_area()
             instructions += f"\nArea: {area:.1f} pixels²"
+        if self.extra_instructions:
+            instructions += '\n' + self.extra_instructions
         self.text.set_text(instructions)
         
     def calculate_area(self):
@@ -277,6 +282,7 @@ class InteractivePolygon:
         
     def extract_roi(self):
         """Extract pixels within the polygon"""
+        print(f"extract_roi called; vertices={len(self.vertices)}")
         if len(self.vertices) < 3:
             print("Need at least 3 points to define a polygon")
             return
@@ -329,6 +335,7 @@ class InteractivePolygon:
 
         # If an on_extract callback is provided, call it instead of closing
         if callable(self.on_extract):
+            print("Calling on_extract callback")
             try:
                 # Let the callback handle storing or visualizing the ROI
                 self.on_extract(self)
@@ -552,6 +559,13 @@ def launch_subarea_selector(image, image_path):
     ax.axis('off')
     ax.set_title('Draw sub-areas (press Enter to finish each selection)')
 
+    # Instruction/legend text for subarea selector (passed into InteractivePolygon)
+    sub_instructions = (
+        "H: Toggle show/hide selected pixels overlay\n"
+        "Enter: Finalize current polygon selection\n"
+        "C: Clear polygon"
+    )
+
     vmin = float(np.min(image))
     vmax = float(np.max(image))
     init_thresh = (vmin + vmax) / 2.0
@@ -564,6 +578,9 @@ def launch_subarea_selector(image, image_path):
     btn_finish = Button(ax_finish, 'Finish')
 
     subareas = []
+    overlay_artists = []  # store imshow artists for permanent overlays
+    current_im_overlay = None  # dynamic overlay for current polygon during mouse move
+    overlays_visible = True
 
     def on_extract_callback(polygon_selector):
         # polygon_selector is the InteractivePolygon instance
@@ -586,13 +603,144 @@ def launch_subarea_selector(image, image_path):
         ax.add_patch(patch)
         ax.text(verts[0][0], verts[0][1], str(count), color='yellow', fontsize=10,
                 bbox=dict(facecolor='black', alpha=0.6))
+        # Highlight pixels that are inside the polygon AND above the threshold
+        try:
+            condition = (image > thresh) & mask
+            n_highlight = int(np.sum(condition))
+            print(f"Overlay candidate pixels (finalized): {n_highlight}")
+            if n_highlight > 0:
+                overlay = np.zeros((image.shape[0], image.shape[1], 4), dtype=float)
+                overlay[..., 0] = condition.astype(float)  # red channel
+                overlay[..., 3] = 0.5 * condition.astype(float)  # alpha channel
+                im_overlay = ax.imshow(overlay, interpolation='nearest', origin='upper', zorder=2)
+                overlay_artists.append(im_overlay)
+            else:
+                print("No pixels above threshold inside polygon; no overlay added.")
+        except Exception as e:
+            print(f"Error creating overlay: {e}")
+
         fig.canvas.draw_idle()
 
     # Create an InteractivePolygon on the image axes that does NOT close the
     # figure when the user finishes a polygon; instead it calls
     # `on_extract_callback` and resets for another selection.
     selector = InteractivePolygon(ax, image, image_path, initial_vertices=None,
-                                  on_extract=on_extract_callback, close_on_extract=False)
+                                  on_extract=on_extract_callback, close_on_extract=False,
+                                  extra_instructions=sub_instructions)
+
+    def refresh_dynamic_overlay(event):
+        """Update a dynamic overlay showing pixels inside current polygon above threshold."""
+        nonlocal current_im_overlay
+        if event.inaxes != ax:
+            return
+        verts = selector.vertices
+        if not verts or len(verts) < 3:
+            # clear dynamic overlay
+            if current_im_overlay is not None:
+                try:
+                    current_im_overlay.set_data(np.zeros((image.shape[0], image.shape[1], 4)))
+                except Exception:
+                    pass
+                fig.canvas.draw_idle()
+            return
+
+        try:
+            result = InteractivePolygon.compute_roi_from_vertices(image, verts)
+            cond = (image > slider_thresh.val) & result['mask']
+            n = int(np.sum(cond))
+            # build overlay
+            overlay = np.zeros((image.shape[0], image.shape[1], 4), dtype=float)
+            if n > 0:
+                overlay[..., 0] = cond.astype(float)
+                overlay[..., 3] = 0.5 * cond.astype(float)
+
+            if current_im_overlay is None:
+                current_im_overlay = ax.imshow(overlay, interpolation='nearest', origin='upper', zorder=4)
+            else:
+                current_im_overlay.set_data(overlay)
+
+        except Exception as e:
+            print(f"Error updating dynamic overlay: {e}")
+
+        fig.canvas.draw_idle()
+
+    # Update overlay on mouse move so users see thresholded pixels live
+    cid_motion_sub = fig.canvas.mpl_connect('motion_notify_event', refresh_dynamic_overlay)
+
+    def update_dynamic_overlay_from_vertices():
+        """Recompute dynamic overlay from current polygon vertices and slider value."""
+        nonlocal current_im_overlay
+        verts = selector.vertices
+        if not verts or len(verts) < 3:
+            if current_im_overlay is not None:
+                try:
+                    current_im_overlay.set_data(np.zeros((image.shape[0], image.shape[1], 4)))
+                except Exception:
+                    pass
+                fig.canvas.draw_idle()
+            return
+
+        try:
+            result = InteractivePolygon.compute_roi_from_vertices(image, verts)
+            cond = (image > slider_thresh.val) & result['mask']
+            overlay = np.zeros((image.shape[0], image.shape[1], 4), dtype=float)
+            if cond.any():
+                overlay[..., 0] = cond.astype(float)
+                overlay[..., 3] = 0.5 * cond.astype(float)
+
+            if current_im_overlay is None:
+                current_im_overlay = ax.imshow(overlay, interpolation='nearest', origin='upper', zorder=4)
+            else:
+                current_im_overlay.set_data(overlay)
+
+        except Exception as e:
+            print(f"Error updating dynamic overlay: {e}")
+
+        fig.canvas.draw_idle()
+
+    def on_button_release(event):
+        """When slider is released, update dynamic overlay immediately."""
+        # If release happened on slider axes, refresh overlay
+        try:
+            if event.inaxes == ax_thresh:
+                update_dynamic_overlay_from_vertices()
+        except Exception:
+            pass
+
+    cid_button_release = fig.canvas.mpl_connect('button_release_event', on_button_release)
+
+    def on_key_sub(event):
+        """Toggle overlay visibility when pressing 'h' in the subarea selector."""
+        nonlocal overlays_visible, current_im_overlay
+        if event.key == 'h':
+            overlays_visible = not overlays_visible
+            for art in overlay_artists:
+                try:
+                    art.set_visible(overlays_visible)
+                except Exception:
+                    pass
+            if current_im_overlay is not None:
+                try:
+                    current_im_overlay.set_visible(overlays_visible)
+                except Exception:
+                    pass
+            fig.canvas.draw_idle()
+            state = 'VISIBLE' if overlays_visible else 'HIDDEN'
+            print(f"Subarea overlays {state}")
+            # Update polygon's extra instructions to reflect overlay state
+            try:
+                selector.extra_instructions = (
+                    f"Move mouse: Preview pixels above threshold inside current polygon\n"
+                    f"Release slider: Refresh preview immediately\n"
+                    f"H: Toggle show/hide selected pixels overlay (currently: {state})\n"
+                    "Enter: Finalize current polygon selection\n"
+                    "C: Clear polygon"
+                )
+                selector.update_instructions()
+            except Exception:
+                pass
+
+    cid_key_sub = fig.canvas.mpl_connect('key_press_event', on_key_sub)
 
     def save_subareas(event):
         if len(subareas) == 0:
