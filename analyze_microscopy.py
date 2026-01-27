@@ -9,7 +9,6 @@ from matplotlib.patches import Polygon, Circle
 from matplotlib.lines import Line2D
 from matplotlib.widgets import Slider, Button, PolygonSelector
 from skimage.draw import polygon
-from cellpose import models
 import csv
 import os
 import tkinter as tk
@@ -383,7 +382,8 @@ def launch_cell_detector(roi_image, image_path):
 
     # Create new figure for cell detection
     fig, ax = plt.subplots(figsize=(12, 10))
-    plt.subplots_adjust(bottom=0.25)
+    # Make room on the right for controls so buttons don't overlap the image
+    plt.subplots_adjust(bottom=0.25, right=0.78, top=0.95)
 
     # Initial parameters for Cellpose
     initial_diameter = 30
@@ -412,10 +412,11 @@ def launch_cell_detector(roi_image, image_path):
             circle.remove()
         det_circles = []
 
-        # Initialize Cellpose model
+        # Initialize Cellpose model (import lazily to avoid slowing script startup)
         global CELLPOSE_MODEL
         if CELLPOSE_MODEL is None:
             print("Loading Cellpose model (first run may take a moment)...")
+            from cellpose import models
             CELLPOSE_MODEL = models.CellposeModel(gpu=True)
             print(f"Cellpose will use GPU: {CELLPOSE_MODEL.gpu}")
 
@@ -460,20 +461,24 @@ def launch_cell_detector(roi_image, image_path):
         det_ax.axis('off')
         print(f"\nDetected {len(filtered_cells)} cells using Cellpose")
 
-    # Create sliders
-    ax_diameter = plt.axes([0.15, 0.15, 0.7, 0.03])
-    ax_flow = plt.axes([0.15, 0.11, 0.7, 0.03])
-    ax_cellprob = plt.axes([0.15, 0.07, 0.7, 0.03])
-    ax_min_size = plt.axes([0.15, 0.03, 0.7, 0.03])
+    # Create sliders (shrink width to respect right margin)
+    slider_width = 0.63  # 0.78 - 0.15
+    ax_diameter = plt.axes([0.15, 0.15, slider_width, 0.03])
+    ax_flow = plt.axes([0.15, 0.11, slider_width, 0.03])
+    ax_cellprob = plt.axes([0.15, 0.07, slider_width, 0.03])
+    ax_min_size = plt.axes([0.15, 0.03, slider_width, 0.03])
 
     slider_diameter = Slider(ax_diameter, 'Cell Diameter (px)', 5, 100, valinit=initial_diameter, valstep=1)
     slider_flow = Slider(ax_flow, 'Flow Threshold', 0.1, 2.0, valinit=initial_flow_threshold, valstep=0.05)
     slider_cellprob = Slider(ax_cellprob, 'Cell Prob Threshold', -6, 6, valinit=initial_cellprob_threshold, valstep=0.5)
     slider_min_size = Slider(ax_min_size, 'Min Area (px²)', 10, 1000, valinit=initial_min_size, valstep=10)
 
-    ax_detect = plt.axes([0.60, 0.90, 0.15, 0.05])
-    ax_save = plt.axes([0.80, 0.90, 0.15, 0.05])
+    # Place control buttons stacked in the right margin so they don't overlap each other
+    ax_detect = plt.axes([0.80, 0.90, 0.15, 0.05])
+    ax_help = plt.axes([0.80, 0.82, 0.15, 0.05])
+    ax_save = plt.axes([0.80, 0.74, 0.15, 0.05])
     btn_detect = Button(ax_detect, 'Recompute')
+    btn_help = Button(ax_help, 'Hide Help')
     btn_save = Button(ax_save, 'Save Results')
 
     def update_detection(val):
@@ -530,6 +535,15 @@ def launch_cell_detector(roi_image, image_path):
         )
         root.destroy()
 
+    # Small help text in the detector view (top-left of image axes)
+    det_help_text = (
+        "Recompute: run Cellpose with current settings\n"
+        "Save Results: write cell CSV + settings\n"
+        "H (keyboard): toggle outlines visibility"
+    )
+    help_text_artist = det_ax.text(0.02, 0.98, det_help_text, transform=det_ax.transAxes,
+                                   verticalalignment='top', bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.8))
+
     def on_key_det(event):
         nonlocal outlines_visible
         if event.key == 'h':
@@ -540,6 +554,18 @@ def launch_cell_detector(roi_image, image_path):
             det_ax.set_title(f'Cell Detection (Cellpose): {len(detected_cells)} cells detected - Outlines {status}', fontsize=14, fontweight='bold')
             det_ax.figure.canvas.draw_idle()
 
+    # Toggle help when clicking the help button
+    def _toggle_help_det(event):
+        try:
+            vis = help_text_artist.get_visible()
+            help_text_artist.set_visible(not vis)
+            btn_help.label.set_text('Show Help' if vis else 'Hide Help')
+            det_ax.figure.canvas.draw_idle()
+        except Exception:
+            pass
+
+    btn_help.on_clicked(_toggle_help_det)
+
     btn_detect.on_clicked(update_detection)
     btn_save.on_clicked(save_cell_detection)
     cid_key_det = fig.canvas.mpl_connect('key_press_event', on_key_det)
@@ -547,6 +573,8 @@ def launch_cell_detector(roi_image, image_path):
     # Initial detection
     detect_cells()
 
+    # Draw canvas explicitly to preserve our manual layout (avoid tight_layout)
+    fig.canvas.draw()
     plt.show()
 
     # After detection window closes, control returns to main flow
@@ -563,7 +591,8 @@ def launch_subarea_selector(image, image_path):
     ROI selector.
     """
     fig, ax = plt.subplots(figsize=(10, 8))
-    plt.subplots_adjust(bottom=0.25)
+    # Make room on the right for buttons so the help text doesn't overlap the image
+    plt.subplots_adjust(bottom=0.25, right=0.78, top=0.94)
     ax.imshow(image, cmap='gray')
     ax.axis('off')
     ax.set_title('Draw sub-areas (press Enter to finish each selection)')
@@ -580,11 +609,14 @@ def launch_subarea_selector(image, image_path):
     vmin = float(np.min(image))
     vmax = float(np.max(image))
     init_thresh = (vmin + vmax) / 2.0
-    ax_thresh = plt.axes([0.15, 0.10, 0.7, 0.03])
+    # Shrink threshold slider width so it doesn't overlap the right margin
+    slider_width = 0.63  # right margin begins at ~0.78, left at 0.15
+    ax_thresh = plt.axes([0.15, 0.10, slider_width, 0.03])
     slider_thresh = Slider(ax_thresh, 'Threshold', vmin, vmax, valinit=init_thresh)
 
-    ax_save = plt.axes([0.80, 0.90, 0.15, 0.05])
-    ax_finish = plt.axes([0.60, 0.90, 0.15, 0.05])
+    # Stack control buttons in the right margin to avoid erratic placement
+    ax_save = plt.axes([0.81, 0.80, 0.15, 0.05])
+    ax_finish = plt.axes([0.81, 0.72, 0.15, 0.05])
     btn_save = Button(ax_save, 'Save Subareas')
     btn_finish = Button(ax_finish, 'Finish')
 
@@ -638,6 +670,21 @@ def launch_subarea_selector(image, image_path):
     selector = InteractivePolygon(ax, image, image_path, initial_vertices=None,
                                   on_extract=on_extract_callback, close_on_extract=False,
                                   extra_instructions=sub_instructions)
+
+    # Help toggle for subarea selector (placed in right margin)
+    ax_help_sub = plt.axes([0.81, 0.88, 0.15, 0.05])
+    btn_help_sub = Button(ax_help_sub, 'Hide Help')
+
+    def _toggle_help_sub(event):
+        try:
+            visible = selector.text.get_visible()
+            selector.text.set_visible(not visible)
+            btn_help_sub.label.set_text('Show Help' if visible else 'Hide Help')
+            selector.ax.figure.canvas.draw_idle()
+        except Exception:
+            pass
+
+    btn_help_sub.on_clicked(_toggle_help_sub)
 
     def refresh_dynamic_overlay(event):
         """Update a dynamic overlay showing pixels inside current polygon above threshold."""
@@ -849,10 +896,34 @@ if initial_vertices:
 ax.set_title(title, fontweight='bold')
 ax.axis('off')
 
+# Shrink image axes slightly to create a right-side margin for controls
+plt.subplots_adjust(right=0.82, top=0.95)
+
 # Create interactive polygon selector
 selector = InteractivePolygon(ax, image, image_path, initial_vertices)
 
-plt.tight_layout()
+# Add a small toggle button to show/hide the help/instruction text (default: shown)
+# Placed in the right margin so it doesn't overlap the image
+ax_help = plt.axes([0.84, 0.92, 0.12, 0.05])
+btn_help = Button(ax_help, 'Hide Help')
+
+def _toggle_help(event):
+    try:
+        visible = selector.text.get_visible()
+        selector.text.set_visible(not visible)
+        # Update button label
+        btn_help.label.set_text('Show Help' if visible else 'Hide Help')
+        selector.ax.figure.canvas.draw_idle()
+    except Exception:
+        pass
+
+btn_help.on_clicked(_toggle_help)
+
+# Avoid `tight_layout()` here because it can override our manual
+# `subplots_adjust` and cause the image axes to expand into the
+# right margin (making the help button overlap the image). Instead
+# draw the canvas and show the figure as-is.
+fig.canvas.draw()
 plt.show()
 
 # After polygon selection window closes, continue sequentially
