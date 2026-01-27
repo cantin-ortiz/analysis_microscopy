@@ -694,7 +694,7 @@ def select_roi_and_show(image_path="Hipp2.1.tiff"):
     # After detection window closes, control returns to main flow
 
 
-def launch_subarea_selector(image, image_path):
+def launch_subarea_selector(image, image_path, roi_mask=None):
     """Open a window to select multiple sub-areas using `InteractivePolygon`.
 
     This creates a single figure with controls (threshold + Save/Finish) and
@@ -731,6 +731,18 @@ def launch_subarea_selector(image, image_path):
     except Exception:
         pass
 
+    # Normalize roi_mask (if provided) to boolean and ensure shape matches
+    if roi_mask is None:
+        roi_mask = np.ones_like(image, dtype=bool)
+    else:
+        try:
+            roi_mask = roi_mask.astype(bool)
+            if roi_mask.shape != image.shape:
+                print("Warning: provided roi_mask shape does not match image; ignoring roi_mask")
+                roi_mask = np.ones_like(image, dtype=bool)
+        except Exception:
+            roi_mask = np.ones_like(image, dtype=bool)
+
     # Stack control buttons in the right margin to avoid erratic placement
     ax_save = plt.axes([0.81, 0.80, 0.15, 0.05])
     ax_finish = plt.axes([0.81, 0.72, 0.15, 0.05])
@@ -752,10 +764,11 @@ def launch_subarea_selector(image, image_path):
             return
 
         thresh = slider_thresh.val
-        mask = result['mask']
-        count = int(np.sum(image[mask] > thresh))
-        area = result['area']
-        mean_int = float(result['roi_pixels'].mean()) if result['area'] > 0 else 0.0
+        mask = result['mask'].astype(bool)
+        effective_mask = mask & roi_mask
+        count = int(np.count_nonzero((image > thresh) & effective_mask))
+        area = int(np.count_nonzero(effective_mask))
+        mean_int = float(image[effective_mask].mean()) if area > 0 else 0.0
         subareas.append({'vertices': np.array(verts).tolist(), 'count': count, 'area': area, 'mean': mean_int, 'threshold': float(thresh)})
 
         # Draw polygon and label
@@ -766,6 +779,7 @@ def launch_subarea_selector(image, image_path):
         # Highlight pixels that are inside the polygon AND above the threshold
         try:
             condition = (image > thresh) & mask
+            condition = condition & roi_mask
             n_highlight = int(np.sum(condition))
             print(f"Overlay candidate pixels (finalized): {n_highlight}")
             if n_highlight > 0:
@@ -826,7 +840,8 @@ def launch_subarea_selector(image, image_path):
 
         try:
             result = InteractivePolygon.compute_roi_from_vertices(image, verts)
-            cond = (image > slider_thresh.val) & result['mask']
+            cond = (image > slider_thresh.val) & result['mask'].astype(bool)
+            cond = cond & roi_mask
             n = int(np.sum(cond))
             # build overlay
             overlay = np.zeros((image.shape[0], image.shape[1], 4), dtype=float)
@@ -867,7 +882,8 @@ def launch_subarea_selector(image, image_path):
 
         try:
             result = InteractivePolygon.compute_roi_from_vertices(image, verts)
-            cond = (image > slider_thresh.val) & result['mask']
+            cond = (image > slider_thresh.val) & result['mask'].astype(bool)
+            cond = cond & roi_mask
             overlay = np.zeros((image.shape[0], image.shape[1], 4), dtype=float)
             if cond.any():
                 overlay[..., 0] = cond.astype(float)
@@ -944,9 +960,11 @@ def launch_subarea_selector(image, image_path):
             return
         try:
             result = InteractivePolygon.compute_roi_from_vertices(image, verts)
-            area = int(result.get('area', 0))
+            mask = result['mask'].astype(bool)
+            effective_mask = mask & roi_mask
+            area = int(np.count_nonzero(effective_mask))
             thresh = float(slider_thresh.val)
-            sel = int(np.sum(image[result['mask']] > thresh)) if area > 0 else 0
+            sel = int(np.count_nonzero((image > thresh) & effective_mask)) if area > 0 else 0
             pct = (sel / area * 100.0) if area > 0 else 0.0
             info_text.set_text(f"Area: {area} px\nSelected: {sel} px\n% Selected: {pct:.1f}%")
         except Exception:
@@ -992,7 +1010,19 @@ if hasattr(selector, 'masked_img') and getattr(selector, 'masked_img') is not No
 
     # Always open subarea selector after optional detection
     try:
-        launch_subarea_selector(selector.masked_img, image_path)
+        # If available, pass the cropped ROI mask so subarea counts ignore pixels
+        # outside the original ROI. `selector.crop_offset` contains (rmin, cmin)
+        roi_mask_cropped = None
+        try:
+            if hasattr(selector, 'mask') and hasattr(selector, 'crop_offset') and selector.mask is not None:
+                rmin, cmin = selector.crop_offset
+                rmax = rmin + selector.masked_img.shape[0] - 1
+                cmax = cmin + selector.masked_img.shape[1] - 1
+                roi_mask_cropped = selector.mask[rmin:rmax+1, cmin:cmax+1]
+        except Exception:
+            roi_mask_cropped = None
+
+        launch_subarea_selector(selector.masked_img, image_path, roi_mask=roi_mask_cropped)
     except Exception as e:
         print(f"Failed to launch subarea selector: {e}")
 else:
