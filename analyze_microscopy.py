@@ -17,7 +17,7 @@ from tkinter import messagebox
 
 
 # Set SKIP_CELL_DETECTION = True during development to speed up testing
-SKIP_CELL_DETECTION = False
+SKIP_CELL_DETECTION = True
 
 
 class InteractivePolygon:
@@ -55,7 +55,7 @@ class InteractivePolygon:
     def update_instructions(self):
         """Update instruction text"""
         instructions = (
-            "Left click: Add point\n"
+            "Left click: Add point (or click on edge to insert)\n"
             "Right click: Remove nearest point\n"
             "Drag: Move point\n"
             "Enter: Extract ROI\n"
@@ -86,6 +86,48 @@ class InteractivePolygon:
             return min_idx
         return None
         
+    def get_edge_insertion_point(self, x, y):
+        """Check if point (x, y) is on a polygon edge and return insertion index"""
+        if len(self.vertices) < 2:
+            return None
+            
+        for i in range(len(self.vertices)):
+            # Get current edge (from vertex i to i+1, wrapping around)
+            p1 = np.array(self.vertices[i])
+            p2 = np.array(self.vertices[(i + 1) % len(self.vertices)])
+            
+            # Calculate distance from point to line segment
+            dist = self.point_to_line_distance(p1, p2, np.array([x, y]))
+            
+            if dist < self.epsilon:
+                # Point is close to this edge, return insertion index
+                # Insert after vertex i
+                return (i + 1) % len(self.vertices)
+        
+        return None
+        
+    def point_to_line_distance(self, p1, p2, p):
+        """Calculate distance from point p to line segment p1-p2"""
+        # Vector from p1 to p2
+        line_vec = p2 - p1
+        # Vector from p1 to p
+        point_vec = p - p1
+        
+        # Length of line segment
+        line_len = np.linalg.norm(line_vec)
+        if line_len == 0:
+            return np.linalg.norm(point_vec)
+        
+        # Project point onto line
+        proj = np.dot(point_vec, line_vec) / (line_len ** 2)
+        proj = np.clip(proj, 0, 1)  # Clamp to segment
+        
+        # Closest point on segment
+        closest = p1 + proj * line_vec
+        
+        # Distance to closest point
+        return np.linalg.norm(p - closest)
+        
     def on_press(self, event):
         """Handle mouse press"""
         if event.inaxes != self.ax:
@@ -97,9 +139,16 @@ class InteractivePolygon:
             if idx is not None:
                 self.dragging_point = idx
             else:
-                # Add new point
-                self.vertices.append([event.xdata, event.ydata])
-                self.update_plot()
+                # Check if clicking on an edge
+                insert_idx = self.get_edge_insertion_point(event.xdata, event.ydata)
+                if insert_idx is not None:
+                    # Insert new point on edge
+                    self.vertices.insert(insert_idx, [event.xdata, event.ydata])
+                    self.update_plot()
+                else:
+                    # Add new point at the end
+                    self.vertices.append([event.xdata, event.ydata])
+                    self.update_plot()
                 
         elif event.button == 3:  # Right click - remove point
             idx = self.get_nearest_vertex_idx(event.xdata, event.ydata)
@@ -290,8 +339,8 @@ class InteractivePolygon:
         # Initialize Cellpose model
         if not hasattr(self, 'cellpose_model'):
             print("Loading Cellpose model (first run may take a moment)...")
-            self.cellpose_model = models.CellposeModel(model_type='cyto2', gpu=True)
-            print(f"Cellpose will use GPU: {self.cellpose_model.gpu} (model: cyto2)")
+            self.cellpose_model = models.CellposeModel(gpu=True)
+            print(f"Cellpose will use GPU: {self.cellpose_model.gpu}")
         
         # Run Cellpose segmentation
         print("Running Cellpose segmentation (this may take 30-60 seconds on CPU)...")
@@ -403,8 +452,23 @@ class InteractivePolygon:
         print(f"  Cell diameter: {self.detection_params['diameter']} px")
         print(f"  Flow threshold: {self.detection_params['flow_threshold']}")
         print(f"  Cell prob threshold: {self.detection_params['cellprob_threshold']}")
-        print(f"  Min size: {self.detection_params['min_size']} px²")
+        print(f"  Min size: {self.detection_params['min_size']} px²")        
+        # Show confirmation in the matplotlib window
         
+        # Create a hidden root window for the dialog
+        root = tk.Tk()
+        root.withdraw()  # Hide the main window
+        
+        messagebox.showinfo(
+            "Save Complete",
+            f"Files saved successfully!\n\n"
+            f"📊 Cell data: {os.path.basename(csv_path)}\n"
+            f"⚙️ Settings: {os.path.basename(settings_csv_path)}\n\n"
+            f"Total cells detected: {len(self.detected_cells)}",
+            parent=None
+        )
+        
+        root.destroy()  # Clean up        
     def on_key_det(self, event):
         """Handle key press in cell detection interface"""
         if event.key == 'h':  # Toggle hide/show outlines
