@@ -89,7 +89,7 @@ class InteractivePolygon:
         """Update instruction text"""
         instructions = (
             "Left click: Add point (or click on edge to insert)\n"
-            "Right click: Remove nearest point\n"
+            "Right click: Remove point\n"
             "Drag: Move point\n"
             f"Points: {len(self.vertices)}\n"
         )
@@ -542,9 +542,7 @@ def launch_cell_detector(roi_image, image_path):
 
     # Small help text in the detector view (top-left of image axes)
     det_help_text = (
-        "Recompute: run Cellpose with current settings\n"
-        "Save Results: write cell CSV + settings\n"
-        "H (keyboard): toggle outlines visibility"
+        "H: Toggle outlines visibility"
     )
     help_text_artist = det_ax.text(0.02, 0.98, det_help_text, transform=det_ax.transAxes,
                                    verticalalignment='top', bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.8))
@@ -714,11 +712,9 @@ def launch_subarea_selector(image, image_path):
     ax.set_title('Draw sub-areas (press Enter to finish each selection)')
 
     # Instruction/legend text for subarea selector (passed into InteractivePolygon)
+    # Simplified: remove Move mouse and Release slider lines; show concise H-line
     sub_instructions = (
-        "Move mouse: Preview pixels above threshold inside current polygon\n"
-        "Release slider: Refresh preview immediately\n"
-        "H: Toggle show/hide selected pixels overlay\n"
-        "Use the buttons: 'Save Subareas' to save, 'Finish' to close\n"
+        "H: Toggle pixel overlay: currently: VISIBLE\n"
         "C: Clear polygon"
     )
 
@@ -729,6 +725,11 @@ def launch_subarea_selector(image, image_path):
     slider_width = 0.63  # right margin begins at ~0.78, left at 0.15
     ax_thresh = plt.axes([0.15, 0.10, slider_width, 0.03])
     slider_thresh = Slider(ax_thresh, 'Threshold', vmin, vmax, valinit=init_thresh)
+    # Update dynamic overlay (and info) as slider moves
+    try:
+        slider_thresh.on_changed(lambda val: update_dynamic_overlay_from_vertices())
+    except Exception:
+        pass
 
     # Stack control buttons in the right margin to avoid erratic placement
     ax_save = plt.axes([0.81, 0.80, 0.15, 0.05])
@@ -779,6 +780,11 @@ def launch_subarea_selector(image, image_path):
             print(f"Error creating overlay: {e}")
 
         fig.canvas.draw_idle()
+        # Refresh info panel for this finalized subarea
+        try:
+            update_info_display()
+        except Exception:
+            pass
 
     # Create an InteractivePolygon on the image axes that does NOT close the
     # figure when the user finishes a polygon; instead it calls
@@ -837,6 +843,11 @@ def launch_subarea_selector(image, image_path):
             print(f"Error updating dynamic overlay: {e}")
 
         fig.canvas.draw_idle()
+        # Update info panel (area / selected / percentage) live
+        try:
+            update_info_display()
+        except Exception:
+            pass
 
     # Update overlay on mouse move so users see thresholded pixels live
     cid_motion_sub = fig.canvas.mpl_connect('motion_notify_event', refresh_dynamic_overlay)
@@ -871,6 +882,10 @@ def launch_subarea_selector(image, image_path):
             print(f"Error updating dynamic overlay: {e}")
 
         fig.canvas.draw_idle()
+        try:
+            update_info_display()
+        except Exception:
+            pass
 
     def on_button_release(event):
         """When slider is released, update dynamic overlay immediately."""
@@ -904,10 +919,7 @@ def launch_subarea_selector(image, image_path):
             # Update polygon's extra instructions to reflect overlay state
             try:
                 selector.extra_instructions = (
-                    f"Move mouse: Preview pixels above threshold inside current polygon\n"
-                    f"Release slider: Refresh preview immediately\n"
-                    f"H: Toggle show/hide selected pixels overlay (currently: {state})\n"
-                    "Enter: Finalize current polygon selection\n"
+                    f"H: Toggle pixel overlay: currently: {state}\n"
                     "C: Clear polygon"
                 )
                 selector.update_instructions()
@@ -915,6 +927,31 @@ def launch_subarea_selector(image, image_path):
                 pass
 
     cid_key_sub = fig.canvas.mpl_connect('key_press_event', on_key_sub)
+
+    # Info panel beneath the right-side buttons: Area / Selected / Percentage
+    ax_info = plt.axes([0.81, 0.60, 0.15, 0.12])
+    ax_info.axis('off')
+    info_text = ax_info.text(0.01, 0.98,
+                             "Area: 0 px\nSelected: 0 px\n% Selected: 0.0%",
+                             transform=ax_info.transAxes, verticalalignment='top', fontsize=10)
+
+    def update_info_display():
+        """Compute and display area, selected pixels and percentage for current polygon."""
+        verts = selector.vertices
+        if not verts or len(verts) < 3:
+            info_text.set_text("Area: 0 px\nSelected: 0 px\n% Selected: 0.0%")
+            fig.canvas.draw_idle()
+            return
+        try:
+            result = InteractivePolygon.compute_roi_from_vertices(image, verts)
+            area = int(result.get('area', 0))
+            thresh = float(slider_thresh.val)
+            sel = int(np.sum(image[result['mask']] > thresh)) if area > 0 else 0
+            pct = (sel / area * 100.0) if area > 0 else 0.0
+            info_text.set_text(f"Area: {area} px\nSelected: {sel} px\n% Selected: {pct:.1f}%")
+        except Exception:
+            info_text.set_text("Area: -\nSelected: -\n% Selected: -")
+        fig.canvas.draw_idle()
 
     def save_subareas(event):
         if len(subareas) == 0:
