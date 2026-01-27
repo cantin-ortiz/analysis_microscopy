@@ -22,7 +22,7 @@ SKIP_CELL_DETECTION = True
 class InteractivePolygon:
     """Interactive polygon selector for ROI selection"""
     
-    def __init__(self, ax, image, image_path, initial_vertices=None, on_extract=None, close_on_extract=True, extra_instructions=None):
+    def __init__(self, ax, image, image_path, initial_vertices=None, on_extract=None, close_on_extract=True, ignore_enter=False, extra_instructions=None):
         self.ax = ax
         self.image = image
         self.image_path = image_path
@@ -67,6 +67,8 @@ class InteractivePolygon:
         
         # Optional extra instructions to display in the instruction text box
         self.extra_instructions = extra_instructions if extra_instructions is not None else ''
+        # Option to ignore Enter key for finalizing selection (use a button instead)
+        self.ignore_enter = bool(ignore_enter)
 
         # Optional callback invoked when user presses Enter to extract ROI
         self.on_extract = on_extract
@@ -92,7 +94,7 @@ class InteractivePolygon:
             f"Points: {len(self.vertices)}\n"
         )
         # Only show Enter instruction when this selector will perform extract on Enter
-        if self.close_on_extract:
+        if self.close_on_extract and not getattr(self, 'ignore_enter', False):
             instructions = instructions.replace(f"Points: {len(self.vertices)}\n", "Enter: Extract ROI\n" + f"Points: {len(self.vertices)}\n")
         # Always show other shortcuts
         instructions += "F: Toggle fill (on/off)\nC: Clear polygon"
@@ -214,6 +216,9 @@ class InteractivePolygon:
             # Toggle fill on/off
             self.toggle_fill()
         elif event.key == 'enter' and len(self.vertices) >= 3:
+            # Optionally ignore Enter (use explicit Extract button instead)
+            if getattr(self, 'ignore_enter', False):
+                return
             # If this polygon is used in subarea selector (has on_extract callback
             # and is configured to NOT close on extract), ignore Enter key so
             # selection is only finalized via UI buttons in the subarea selector.
@@ -899,30 +904,37 @@ ax.axis('off')
 # Shrink image axes slightly to create a right-side margin for controls
 plt.subplots_adjust(right=0.82, top=0.95)
 
-# Create interactive polygon selector
-selector = InteractivePolygon(ax, image, image_path, initial_vertices)
+# Create interactive polygon selector (ignore Enter; use button to extract)
+selector = InteractivePolygon(ax, image, image_path, initial_vertices, ignore_enter=True)
 
-# Add a small toggle button to show/hide the help/instruction text (default: shown)
-# Placed in the right margin so it doesn't overlap the image
+# Add Help and Extract buttons in the right margin (don't overlap image)
 ax_help = plt.axes([0.84, 0.92, 0.12, 0.05])
 btn_help = Button(ax_help, 'Hide Help')
+ax_extract = plt.axes([0.84, 0.84, 0.12, 0.05])
+btn_extract = Button(ax_extract, 'Extract ROI')
 
 def _toggle_help(event):
     try:
         visible = selector.text.get_visible()
         selector.text.set_visible(not visible)
-        # Update button label
         btn_help.label.set_text('Show Help' if visible else 'Hide Help')
         selector.ax.figure.canvas.draw_idle()
     except Exception:
         pass
 
-btn_help.on_clicked(_toggle_help)
+def _extract_roi(event):
+    try:
+        if len(selector.vertices) < 3:
+            print('Need at least 3 points to extract ROI')
+            return
+        selector.extract_roi()
+    except Exception as e:
+        print(f'Error extracting ROI: {e}')
 
-# Avoid `tight_layout()` here because it can override our manual
-# `subplots_adjust` and cause the image axes to expand into the
-# right margin (making the help button overlap the image). Instead
-# draw the canvas and show the figure as-is.
+btn_help.on_clicked(_toggle_help)
+btn_extract.on_clicked(_extract_roi)
+
+# Draw canvas and show
 fig.canvas.draw()
 plt.show()
 
