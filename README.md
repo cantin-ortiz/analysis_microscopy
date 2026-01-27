@@ -1,13 +1,28 @@
 Microscopy analysis — refactored
 
+Quick start
+- Install dependencies: `pip install -r requirements.txt`
 - Run the GUI: `python main.py`
-- Requirements: see `requirements.txt` (install with `pip install -r requirements.txt`)
 
-Files:
-- `main.py`: entry point
-- `interactive.py`: polygon selector
-- `detection.py`: cell detection (Cellpose)
-- `subareas.py`: subarea selection and JSON export
+Project layout
+- `main.py`: lightweight entry point that orchestrates the workflow
+- `roi_selector.py`: interactive ROI loader + polygon selection (moved out of `main.py`)
+- `interactive.py`: `InteractivePolygon` class and ROI utilities
+- `detection.py`: interactive Cellpose-based cell detection view
+- `subareas.py`: subarea selection, threshold overlays, and JSON export
 
-Notes:
-- `SKIP_CELL_DETECTION` in `main.py` can be toggled for faster testing.
+Notes
+- `SKIP_CELL_DETECTION` in `main.py` is set to `True` for fast testing; set to `False` to enable Cellpose segmentation (requires `cellpose` and GPU/CPU runtime).
+- Saved outputs: `*_polygon.csv` (polygon coords), `*_cells.csv` + `*_settings.csv` (cell detection), `*_subareas.json` (subarea stats).
+
+Testing and development
+- To quickly smoke-test imports without opening GUIs run:
+
+```bash
+python -c "import main, interactive, detection, subareas, roi_selector; print('ok')"
+```
+
+Contributing
+- Keep UI code in the small modules above; prefer unit-testing pure functions in `interactive.py` (e.g., `compute_roi_from_vertices`).
+
+If you want, I can add a short test suite and a `black`/`flake8` configuration next.
