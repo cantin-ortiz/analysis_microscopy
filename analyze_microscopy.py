@@ -687,7 +687,7 @@ def select_roi_and_show(image_path="Hipp2.1.tiff"):
     # After detection window closes, control returns to main flow
 
 
-def launch_subarea_selector(image, image_path, roi_mask=None):
+def launch_subarea_selector(image, image_path, roi_mask=None, roi_vertices=None):
     """Open a window to select multiple sub-areas using `InteractivePolygon`.
 
     This creates a single figure with controls (threshold + Save/Finish) and
@@ -1011,26 +1011,46 @@ def launch_subarea_selector(image, image_path, roi_mask=None):
             return
 
         base_name = os.path.splitext(image_path)[0]
-        csv_path = f"{base_name}_subareas.csv"
+        json_path = f"{base_name}_subareas.json"
 
-        # Write CSV with columns: area_name, subarea_id, vertices (as JSON), area_pixels, selected_pixels, percent_selected, threshold
-        with open(csv_path, 'w', newline='') as f:
-            writer = csv.writer(f)
-            writer.writerow(['area_name', 'subarea_id', 'vertices', 'area_pixels', 'selected_pixels', 'percent_selected', 'threshold'])
-            for idx, sa in enumerate(subareas, 1):
-                verts = sa.get('vertices', [])
-                area_px = int(sa.get('area', 0))
-                selected = int(sa.get('count', 0))
-                pct = (selected / area_px * 100.0) if area_px > 0 else 0.0
-                thresh = float(sa.get('threshold', 0.0))
-                writer.writerow([area_name, idx, json.dumps(verts), area_px, selected, f"{pct:.2f}", thresh])
+        # Build JSON structure
+        payload = {
+            'image': os.path.basename(image_path),
+            'roi_vertices': roi_vertices if roi_vertices is not None else [],
+            'subareas': []
+        }
 
-        print(f"Subarea results saved to: {csv_path}")
+        for idx, sa in enumerate(subareas, 1):
+            verts = sa.get('vertices', [])
+            area_px = int(sa.get('area', 0))
+            selected = int(sa.get('count', 0))
+            pct = (selected / area_px * 100.0) if area_px > 0 else 0.0
+            thresh = float(sa.get('threshold', 0.0))
+            mean_int = float(sa.get('mean', 0.0))
+            payload['subareas'].append({
+                'areaname': area_name,
+                'subarea_id': idx,
+                'vertices': verts,
+                'area_pixels': area_px,
+                'selected_pixels': selected,
+                'percent_selected': round(pct, 2),
+                'threshold': thresh,
+                'mean_intensity': mean_int
+            })
+
+        # Write JSON file
         try:
-            messagebox.showinfo('Save Complete', f"Subarea results saved to:\n{os.path.basename(csv_path)}", parent=root)
-        except Exception:
-            pass
-        root.destroy()
+            with open(json_path, 'w') as f:
+                json.dump(payload, f, indent=2)
+            print(f"Subarea results saved to: {json_path}")
+            try:
+                messagebox.showinfo('Save Complete', f"Subarea results saved to:\n{os.path.basename(json_path)}", parent=root)
+            except Exception:
+                pass
+        except Exception as e:
+            print(f"Failed to write JSON file: {e}")
+        finally:
+            root.destroy()
 
     def finish(event):
         plt.close(fig)
