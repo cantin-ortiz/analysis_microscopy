@@ -13,6 +13,8 @@ import csv
 import os
 import tkinter as tk
 from tkinter import messagebox
+from tkinter import simpledialog
+import json
 
 
 # Set SKIP_CELL_DETECTION = True during development to speed up testing
@@ -215,16 +217,7 @@ class InteractivePolygon:
         elif event.key in ('f', 'F'):
             # Toggle fill on/off
             self.toggle_fill()
-        elif event.key == 'enter' and len(self.vertices) >= 3:
-            # Optionally ignore Enter (use explicit Extract button instead)
-            if getattr(self, 'ignore_enter', False):
-                return
-            # If this polygon is used in subarea selector (has on_extract callback
-            # and is configured to NOT close on extract), ignore Enter key so
-            # selection is only finalized via UI buttons in the subarea selector.
-            if self.on_extract is not None and not self.close_on_extract:
-                return
-            self.extract_roi()
+
 
     def toggle_fill(self):
         """Toggle polygon fill visibility/alpha"""
@@ -972,18 +965,72 @@ def launch_subarea_selector(image, image_path, roi_mask=None):
         fig.canvas.draw_idle()
 
     def save_subareas(event):
+        # If user has a currently-drawn polygon (not finalized via Enter),
+        # include it as a subarea before saving.
+        try:
+            current_verts = selector.vertices
+        except Exception:
+            current_verts = None
+
+        if current_verts and len(current_verts) >= 3:
+            try:
+                result = InteractivePolygon.compute_roi_from_vertices(image, current_verts)
+                thresh = slider_thresh.val
+                mask = result['mask'].astype(bool)
+                effective_mask = mask & roi_mask
+                count = int(np.count_nonzero((image > thresh) & effective_mask))
+                area = int(np.count_nonzero(effective_mask))
+                mean_int = float(image[effective_mask].mean()) if area > 0 else 0.0
+                subareas.append({'vertices': np.array(current_verts).tolist(), 'count': count, 'area': area, 'mean': mean_int, 'threshold': float(thresh)})
+                # Draw polygon and label for feedback
+                try:
+                    patch = Polygon(np.array(current_verts), fill=False, edgecolor='blue', linewidth=2)
+                    ax.add_patch(patch)
+                    ax.text(current_verts[0][0], current_verts[0][1], str(count), color='yellow', fontsize=10,
+                            bbox=dict(facecolor='black', alpha=0.6))
+                except Exception:
+                    pass
+            except Exception as e:
+                print(f"Error computing stats for current polygon: {e}")
+
         if len(subareas) == 0:
             print('No subareas to save')
             return
+        # Ask user for an area name (default: area1)
+        root = tk.Tk()
+        root.withdraw()
+        try:
+            area_name = simpledialog.askstring('Area name', 'Enter area name:', initialvalue='area1', parent=root)
+        except Exception:
+            area_name = None
+
+        if area_name is None:
+            # User cancelled
+            print('Save cancelled by user')
+            root.destroy()
+            return
+
         base_name = os.path.splitext(image_path)[0]
         csv_path = f"{base_name}_subareas.csv"
+
+        # Write CSV with columns: area_name, subarea_id, vertices (as JSON), area_pixels, selected_pixels, percent_selected, threshold
         with open(csv_path, 'w', newline='') as f:
             writer = csv.writer(f)
-            writer.writerow(['subarea_id', 'count_above_threshold', 'area_pixels', 'mean_intensity', 'threshold', 'vertices'])
+            writer.writerow(['area_name', 'subarea_id', 'vertices', 'area_pixels', 'selected_pixels', 'percent_selected', 'threshold'])
             for idx, sa in enumerate(subareas, 1):
-                writer.writerow([idx, sa['count'], sa['area'], sa['mean'], sa['threshold'], sa['vertices']])
+                verts = sa.get('vertices', [])
+                area_px = int(sa.get('area', 0))
+                selected = int(sa.get('count', 0))
+                pct = (selected / area_px * 100.0) if area_px > 0 else 0.0
+                thresh = float(sa.get('threshold', 0.0))
+                writer.writerow([area_name, idx, json.dumps(verts), area_px, selected, f"{pct:.2f}", thresh])
+
         print(f"Subarea results saved to: {csv_path}")
-        messagebox.showinfo('Save Complete', f"Subarea results saved to:\n{os.path.basename(csv_path)}")
+        try:
+            messagebox.showinfo('Save Complete', f"Subarea results saved to:\n{os.path.basename(csv_path)}", parent=root)
+        except Exception:
+            pass
+        root.destroy()
 
     def finish(event):
         plt.close(fig)
