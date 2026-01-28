@@ -11,6 +11,8 @@ from tkinter import messagebox, simpledialog
 import os
 
 from interactive import InteractivePolygon
+from startup import choose_image_file
+import sys
 
 
 def launch_subarea_selector(image, image_path, roi_mask=None, roi_vertices=None, store=None):
@@ -55,6 +57,9 @@ def launch_subarea_selector(image, image_path, roi_mask=None, roi_vertices=None,
     ax_finish = plt.axes([0.81, 0.72, 0.15, 0.05])
     btn_save = Button(ax_save, 'Save Subareas')
     btn_finish = Button(ax_finish, 'Finish')
+
+    # Change request signal for returning a new file selection to caller
+    change_request = {'path': None}
 
     subareas = []
     overlay_artists = []
@@ -342,9 +347,45 @@ def launch_subarea_selector(image, image_path, roi_mask=None, roi_vertices=None,
             root.destroy()
 
     def finish(event):
-        plt.close(fig)
+        try:
+            root = tk.Tk()
+            root.withdraw()
+            resp = messagebox.askyesno(
+                "Finished",
+                "Do you want to continue?.\n\nYes = Select another file\nNo = Close the app",
+                parent=root,
+                icon='question'
+            )
+            root.destroy()
+        except Exception:
+            resp = False
+
+        if resp:
+            try:
+                new_path = choose_image_file(initialfile=os.path.basename(image_path) if image_path else 'Hipp2.1.tiff')
+                if not new_path:
+                    print('No new file selected. Exiting.')
+                    sys.exit(0)
+                change_request['path'] = new_path
+                try:
+                    import matplotlib.pyplot as _plt
+                    _plt.close(fig)
+                except Exception:
+                    pass
+            except Exception as e:
+                print(f'Error selecting new file after finish: {e}')
+                sys.exit(0)
+        else:
+            print('Closing application as requested.')
+            sys.exit(0)
 
     btn_save.on_clicked(save_subareas)
     btn_finish.on_clicked(finish)
 
     plt.show()
+
+    # If finish triggered a change-request, return it to caller
+    if change_request.get('path'):
+        return ('change_file', change_request['path'])
+
+    return
