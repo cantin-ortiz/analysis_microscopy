@@ -340,7 +340,7 @@ def launch_subarea_selector(image, image_path, roi_mask=None, roi_vertices=None,
                     print(f"Failed to save subareas to AnalysisStore: {e}")
             else:
                 root.destroy()
-                raise FileNotFoundError(f"No analysis JSON found at: {json_path}; cannot save subareas")
+                raise FileNotFoundError(f"No analysis JSON found for image: {image_path}; cannot save subareas")
         except Exception as e:
             print(f"Failed to write JSON file: {e}")
         finally:
