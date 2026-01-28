@@ -12,6 +12,7 @@ import sys
 from interactive import InteractivePolygon
 from analysis_store import AnalysisStore
 from matplotlib.widgets import Button
+from startup import choose_image_file
 
 
 def select_roi_and_show(image_path="Hipp2.1.tiff"):
@@ -157,7 +158,34 @@ def select_roi_and_show(image_path="Hipp2.1.tiff"):
     btn_help.on_clicked(_toggle_help)
     btn_extract.on_clicked(_extract_roi)
 
+    # 'Change file' button to return control to startup file selection
+    btn_change_ax = plt.axes([0.84, 0.76, 0.12, 0.05])
+    btn_change = Button(btn_change_ax, 'Change file')
+
+    change_request = {'path': None}
+
+    def _change_file(event):
+        try:
+            new_path = choose_image_file(initialfile=os.path.basename(image_path) if image_path else 'Hipp2.1.tiff')
+            if not new_path:
+                print('Change file canceled.')
+                return
+            change_request['path'] = new_path
+            print(f'Changing file to: {new_path}')
+            try:
+                import matplotlib.pyplot as _plt
+                _plt.close(fig)
+            except Exception:
+                pass
+        except Exception as e:
+            print(f'Error selecting new file: {e}')
+
+    btn_change.on_clicked(_change_file)
+
     fig.canvas.draw()
     plt.show()
+
+    if change_request.get('path'):
+        return ('change_file', change_request['path'])
 
     return selector, store
