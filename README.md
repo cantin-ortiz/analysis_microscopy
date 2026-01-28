@@ -13,7 +13,7 @@ Project layout
 
 Notes
 - `SKIP_CELL_DETECTION` in `main.py` is set to `True` for fast testing; set to `False` to enable Cellpose segmentation (requires `cellpose` and GPU/CPU runtime).
-- Saved outputs: `*_polygon.csv` (polygon coords), `*_cells.csv` + `*_settings.csv` (cell detection), `*_subareas.json` (subarea stats).
+- Saved outputs: `*_cells.csv` + `*_settings.csv` (cell detection), `*_subareas.json` (subarea stats), and per-image analysis JSON files containing `roi_polygon`.
 
 Testing and development
 - To quickly smoke-test imports without opening GUIs run:

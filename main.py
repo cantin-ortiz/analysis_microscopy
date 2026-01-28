@@ -22,7 +22,7 @@ SKIP_CELL_DETECTION = True
 
 if __name__ == '__main__':
     image_path = "Hipp2.1.tiff"
-    selector = select_roi_and_show(image_path)
+    selector, store = select_roi_and_show(image_path)
 
     if hasattr(selector, 'masked_img') and getattr(selector, 'masked_img') is not None:
         if not SKIP_CELL_DETECTION:

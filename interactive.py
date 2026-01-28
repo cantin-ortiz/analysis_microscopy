@@ -6,7 +6,6 @@ import numpy as np
 from matplotlib.patches import Polygon
 from skimage.draw import polygon
 
-import csv
 import os
 import tkinter as tk
 from tkinter import messagebox
@@ -330,11 +329,10 @@ class InteractivePolygon:
         self.masked_img = masked_img
         self.area = int(np.sum(mask))
 
-        # If an on_extract callback is provided, call it instead of closing
+        # If an on_extract callback is provided, call it and let it handle saving.
         if callable(self.on_extract):
             print("Calling on_extract callback")
             try:
-                # Let the callback handle storing or visualizing the ROI
                 self.on_extract(self)
             except Exception as e:
                 print(f"on_extract callback raised: {e}")
@@ -345,18 +343,18 @@ class InteractivePolygon:
                 self.update_plot()
                 return
 
-        # Save polygon coordinates only when closing (original behavior)
-        if self.close_on_extract:
-            import csv
-            base_name = os.path.splitext(self.image_path)[0]
-            csv_path = f"{base_name}_polygon.csv"
-            with open(csv_path, 'w', newline='') as f:
-                writer = csv.writer(f)
-                writer.writerow(['x', 'y'])
-                for vertex in self.vertices:
-                    writer.writerow(vertex)
-            print(f"\nPolygon coordinates saved to: {csv_path}")
+            # If closing on extract, just close the figure (callback handled saving)
+            if self.close_on_extract:
+                try:
+                    import matplotlib.pyplot as plt
+                    plt.close(self.ax.figure)
+                except Exception:
+                    pass
+                return
 
+        # No on_extract callback provided: do not attempt CSV saving; just close if requested
+        if self.close_on_extract:
+            print("No on_extract callback provided; polygon will not be saved to file.")
             try:
                 import matplotlib.pyplot as plt
                 plt.close(self.ax.figure)

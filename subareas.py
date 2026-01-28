@@ -301,11 +301,14 @@ def launch_subarea_selector(image, image_path, roi_mask=None, roi_vertices=None)
             return
 
         base_name = os.path.splitext(image_path)[0]
-        json_path = f"{base_name}_subareas.json"
+        # Consolidated output file: includes subareas, polygon and cell segmentation data
+        json_path = f"{base_name}_analysis.json"
 
         payload = {
             'image': os.path.basename(image_path),
+            # Keep legacy key and add explicit `roi_polygon` field
             'roi_vertices': roi_vertices if roi_vertices is not None else [],
+            'roi_polygon': roi_vertices if roi_vertices is not None else [],
             'subareas': []
         }
 
