@@ -13,7 +13,7 @@ import os
 from interactive import InteractivePolygon
 
 
-def launch_subarea_selector(image, image_path, roi_mask=None, roi_vertices=None):
+def launch_subarea_selector(image, image_path, roi_mask=None, roi_vertices=None, store=None):
     """Open a window to select multiple sub-areas using `InteractivePolygon`."""
     fig, ax = plt.subplots(figsize=(10, 8))
     # Make room on the right for buttons so the help text doesn't overlap the image
@@ -300,17 +300,8 @@ def launch_subarea_selector(image, image_path, roi_mask=None, roi_vertices=None)
             root.destroy()
             return
 
-        base_name = os.path.splitext(image_path)[0]
-        # Consolidated output file: includes subareas, polygon and cell segmentation data
-        json_path = f"{base_name}_analysis.json"
-
-        payload = {
-            'image': os.path.basename(image_path),
-            # Keep legacy key and add explicit `roi_polygon` field
-            'roi_vertices': roi_vertices if roi_vertices is not None else [],
-            'roi_polygon': roi_vertices if roi_vertices is not None else [],
-            'subareas': []
-        }
+        # Only keep subarea information here; other metadata is stored elsewhere
+        payload = []
 
         for idx, sa in enumerate(subareas, 1):
             verts = sa.get('vertices', [])
@@ -319,7 +310,7 @@ def launch_subarea_selector(image, image_path, roi_mask=None, roi_vertices=None)
             pct = (selected / area_px * 100.0) if area_px > 0 else 0.0
             thresh = float(sa.get('threshold', 0.0))
             mean_int = float(sa.get('mean', 0.0))
-            payload['subareas'].append({
+            payload.append({
                 'areaname': area_name,
                 'subarea_id': idx,
                 'vertices': verts,
@@ -331,13 +322,20 @@ def launch_subarea_selector(image, image_path, roi_mask=None, roi_vertices=None)
             })
 
         try:
-            with open(json_path, 'w') as f:
-                json.dump(payload, f, indent=2)
-            print(f"Subarea results saved to: {json_path}")
-            try:
-                messagebox.showinfo('Save Complete', f"Subarea results saved to:\n{os.path.basename(json_path)}", parent=root)
-            except Exception:
-                pass
+            if store is not None:
+                # Only save subareas into the AnalysisStore; other keys are managed elsewhere
+                try:
+                    store.set('subareas', payload)
+                    print(f"Subarea results saved to analysis JSON: {store.filename}")
+                    try:
+                        messagebox.showinfo('Save Complete', f"Subarea results saved to:\n{os.path.basename(store.filename)}", parent=root)
+                    except Exception:
+                        pass
+                except Exception as e:
+                    print(f"Failed to save subareas to AnalysisStore: {e}")
+            else:
+                root.destroy()
+                raise FileNotFoundError(f"No analysis JSON found at: {json_path}; cannot save subareas")
         except Exception as e:
             print(f"Failed to write JSON file: {e}")
         finally:

@@ -42,7 +42,7 @@ if __name__ == '__main__':
             except Exception:
                 roi_mask_cropped = None
 
-            launch_subarea_selector(selector.masked_img, image_path, roi_mask=roi_mask_cropped)
+            launch_subarea_selector(selector.masked_img, image_path, roi_mask=roi_mask_cropped, store=store)
         except Exception as e:
             print(f"Failed to launch subarea selector: {e}")
     else:
