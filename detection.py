@@ -14,12 +14,37 @@ from tkinter import messagebox
 CELLPOSE_MODEL = None
 
 
-def launch_cell_detector(roi_image, image_path):
+def launch_cell_detector(roi_image, image_path, store=None):
     """Launch interactive cell detection interface (module-level)"""
     global CELLPOSE_MODEL
 
     # Create new figure for cell detection
     fig, ax = plt.subplots(figsize=(12, 10))
+    # Try to open the figure fullscreen / maximized where possible
+    try:
+        mgr = plt.get_current_fig_manager()
+        try:
+            win = mgr.window
+            try:
+                win.attributes('-fullscreen', True)
+            except Exception:
+                try:
+                    win.state('zoomed')
+                except Exception:
+                    try:
+                        mgr.window.showMaximized()
+                    except Exception:
+                        try:
+                            mgr.full_screen_toggle()
+                        except Exception:
+                            pass
+        except Exception:
+            try:
+                mgr.full_screen_toggle()
+            except Exception:
+                pass
+    except Exception:
+        pass
     # Make room on the right for controls so buttons don't overlap the image
     plt.subplots_adjust(bottom=0.25, right=0.78, top=0.95)
 
@@ -111,6 +136,99 @@ def launch_cell_detector(roi_image, image_path):
     slider_cellprob = Slider(ax_cellprob, 'Cell Prob Threshold', -6, 6, valinit=initial_cellprob_threshold, valstep=0.5)
     slider_min_size = Slider(ax_min_size, 'Min Area (px²)', 10, 1000, valinit=initial_min_size, valstep=10)
 
+    # If a store with previous segmentation is provided, offer to load it
+    loaded_from_store = False
+    try:
+        if store is not None:
+            try:
+                existing_cells = store.get('segmented_cells', None)
+            except Exception:
+                existing_cells = getattr(store, 'data', {}).get('segmented_cells') if hasattr(store, 'data') else None
+
+            if existing_cells:
+                try:
+                    root = tk.Tk()
+                    root.withdraw()
+                    try:
+                        root.attributes('-topmost', True)
+                    except Exception:
+                        pass
+                    ask = messagebox.askyesno('Load segmentation', f"Found {len(existing_cells)} segmented cells in analysis file. Load them instead of running Cellpose?", parent=root)
+                    root.destroy()
+                except Exception:
+                    ask = messagebox.askyesno('Load segmentation', f"Found {len(existing_cells)} segmented cells in analysis file. Load them instead of running Cellpose?")
+
+                if ask:
+                    # Load settings if available
+                    try:
+                        saved_settings = store.get('cell_detection_settings', None)
+                    except Exception:
+                        saved_settings = getattr(store, 'data', {}).get('cell_detection_settings') if hasattr(store, 'data') else None
+
+                    if isinstance(saved_settings, dict):
+                        for k in ('diameter', 'flow_threshold', 'cellprob_threshold', 'min_size'):
+                            if k in saved_settings:
+                                try:
+                                    detection_params[k] = saved_settings[k]
+                                except Exception:
+                                    pass
+
+                    # Apply settings to sliders
+                    try:
+                        slider_diameter.set_val(detection_params['diameter'])
+                        slider_flow.set_val(detection_params['flow_threshold'])
+                        slider_cellprob.set_val(detection_params['cellprob_threshold'])
+                        slider_min_size.set_val(detection_params['min_size'])
+                    except Exception:
+                        pass
+
+                    # Populate detected_cells array from store
+                    try:
+                        parsed = []
+                        for item in existing_cells:
+                            # expect dict with x,y,radius,area or similar
+                            x = float(item.get('x', item.get('cx', 0)))
+                            y = float(item.get('y', item.get('cy', 0)))
+                            r = float(item.get('radius', item.get('r', 0)))
+                            area = float(item.get('area', 0))
+                            parsed.append((y, x, r, area))
+                        detected_cells = np.array(parsed) if len(parsed) > 0 else np.empty((0, 4))
+                    except Exception:
+                        detected_cells = np.empty((0, 4))
+
+                    # Render the loaded detections (without running Cellpose)
+                    def render_loaded_cells():
+                        nonlocal det_circles
+                        # remove any existing
+                        for c in det_circles:
+                            try:
+                                c.remove()
+                            except Exception:
+                                pass
+                        det_circles = []
+                        for y, x, r, area in (detected_cells if detected_cells.size else []):
+                            try:
+                                circle = Circle((x, y), r, fill=False, edgecolor='red', linewidth=2, alpha=0.8)
+                                det_ax.add_patch(circle)
+                                det_circles.append(circle)
+                            except Exception:
+                                pass
+                        for circle in det_circles:
+                            circle.set_visible(outlines_visible)
+                        status = "VISIBLE" if outlines_visible else "HIDDEN"
+                        det_ax.set_title(f'Cell Detection (Loaded): {len(det_circles)} cells - Outlines {status}', fontsize=14, fontweight='bold')
+                        det_ax.axis('off')
+                        try:
+                            det_ax.figure.canvas.draw_idle()
+                        except Exception:
+                            pass
+                        print(f"\nLoaded {len(det_circles)} cells from AnalysisStore")
+
+                    render_loaded_cells()
+                    loaded_from_store = True
+    except Exception:
+        loaded_from_store = False
+
     # Place control buttons stacked in the right margin so they don't overlap each other
     ax_detect = plt.axes([0.80, 0.90, 0.15, 0.05])
     ax_help = plt.axes([0.80, 0.82, 0.15, 0.05])
@@ -142,36 +260,121 @@ def launch_cell_detector(roi_image, image_path):
 
     def save_cell_detection(event):
         nonlocal detected_cells, detection_params
+        # avoid rebinding outer `store` name inside this nested function
+        store_obj = store
         if len(detected_cells) == 0:
             print("No cells detected to save")
             return
-        base_name = os.path.splitext(image_path)[0]
-        csv_path = f"{base_name}_cells.csv"
-        with open(csv_path, 'w', newline='') as f:
-            writer = csv.writer(f)
-            writer.writerow(['cell_id', 'x', 'y', 'radius', 'area'])
-            for idx, cell in enumerate(detected_cells, 1):
-                y, x, r, area = cell
-                writer.writerow([idx, x, y, r, area])
+        # Ensure we have an AnalysisStore to persist into (use provided store or create one)
+        if store_obj is None:
+            try:
+                from analysis_store import AnalysisStore
+                store_obj = AnalysisStore(image_path)
+            except Exception as e:
+                raise RuntimeError(f"Unable to create AnalysisStore for '{image_path}': {e}")
 
-        settings_csv_path = f"{base_name}_settings.csv"
-        with open(settings_csv_path, 'w', newline='') as f:
-            writer = csv.writer(f)
-            writer.writerow(['parameter', 'value'])
-            for param, value in detection_params.items():
-                writer.writerow([param, value])
+        # Persist into the AnalysisStore; prompt before overwriting existing segmentation
+        try:
+            # prepare payload
+            cells_payload = [
+                {'cell_id': int(idx), 'x': float(cell[1]), 'y': float(cell[0]), 'radius': float(cell[2]), 'area': float(cell[3])}
+                for idx, cell in enumerate(detected_cells, 1)
+            ]
 
-        print(f"\nCell detection results saved to: {csv_path}")
-        print(f"Cellpose settings saved to: {settings_csv_path}")
+            # Check for existing segmented_cells and confirm overwrite
+            try:
+                existing = store_obj.get('segmented_cells', None)
+            except Exception:
+                existing = getattr(store_obj, 'data', {}).get('segmented_cells') if hasattr(store_obj, 'data') else None
 
+            if existing:
+                # build a small Tk parent for the dialog
+                try:
+                    root_confirm = tk.Tk()
+                    root_confirm.withdraw()
+                    try:
+                        root_confirm.attributes('-topmost', True)
+                    except Exception:
+                        pass
+                    overwrite = messagebox.askyesno('Overwrite segmentation', f"Analysis JSON already contains {len(existing)} segmented cells. Overwrite them?", parent=root_confirm)
+                    try:
+                        root_confirm.destroy()
+                    except Exception:
+                        pass
+                except Exception:
+                    overwrite = messagebox.askyesno('Overwrite segmentation', f"Analysis JSON already contains {len(existing)} segmented cells. Overwrite them?")
+
+                if not overwrite:
+                    # user cancelled overwrite — inform, close this detector, and continue pipeline
+                    try:
+                        root_info = tk.Tk()
+                        root_info.withdraw()
+                        try:
+                            root_info.attributes('-topmost', True)
+                        except Exception:
+                            pass
+                        messagebox.showinfo('Save Cancelled', 'Existing segmentation preserved; save cancelled. Moving to subarea selection.', parent=root_info)
+                        try:
+                            root_info.destroy()
+                        except Exception:
+                            pass
+                    except Exception:
+                        try:
+                            messagebox.showinfo('Save Cancelled', 'Existing segmentation preserved; save cancelled. Moving to subarea selection.')
+                        except Exception:
+                            pass
+
+                    # Close this detection figure and return so main pipeline continues
+                    try:
+                        import matplotlib.pyplot as _plt
+                        try:
+                            _plt.close(fig)
+                        except Exception:
+                            pass
+                    except Exception:
+                        pass
+                    return
+
+            # perform the write
+            try:
+                store_obj.set('segmented_cells', cells_payload)
+                store_obj.set('cell_detection_settings', detection_params)
+            except Exception as e:
+                raise
+        except Exception as e:
+            raise RuntimeError(f"Failed to persist detection results to AnalysisStore: {e}")
+
+        saved_to = getattr(store_obj, 'filename', None)
+
+        # Notify success
         root = tk.Tk()
         root.withdraw()
+        try:
+            root.attributes('-topmost', True)
+        except Exception:
+            pass
         messagebox.showinfo(
             "Save Complete",
-            f"Files saved successfully!\n\n📊 Cell data: {os.path.basename(csv_path)}\n⚙️ Settings: {os.path.basename(settings_csv_path)}\n\nTotal cells detected: {len(detected_cells)}",
-            parent=None
+            f"Cell detection results saved into analysis JSON:\n{os.path.basename(saved_to)}\n\nTotal cells detected: {len(detected_cells)}",
+            parent=root
         )
-        root.destroy()
+        try:
+            root.destroy()
+        except Exception:
+            pass
+
+        # Close this detection figure before launching the next module
+        try:
+            import matplotlib.pyplot as _plt
+            try:
+                _plt.close(fig)
+            except Exception:
+                pass
+        except Exception:
+            pass
+
+        # Close the detection figure and return to the main pipeline
+        # The main pipeline will continue to launch the subarea selector.
 
     # Small help text in the detector view (top-left of image axes)
     det_help_text = (
@@ -206,9 +409,12 @@ def launch_cell_detector(roi_image, image_path):
     btn_save.on_clicked(save_cell_detection)
     cid_key_det = fig.canvas.mpl_connect('key_press_event', on_key_det)
 
-    # Initial detection
-    detect_cells()
+    # Initial detection (skip running Cellpose if we loaded from store)
+    if not loaded_from_store:
+        detect_cells()
 
     # Draw canvas explicitly to preserve our manual layout (avoid tight_layout)
     fig.canvas.draw()
     plt.show()
+
+    return

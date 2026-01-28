@@ -14,7 +14,8 @@ from subareas import launch_subarea_selector
 from roi_selector import select_roi_and_show
 
 # Set SKIP_CELL_DETECTION = True during development to speed up testing
-SKIP_CELL_DETECTION = True
+# This default can be overridden by the 'Skip cell detection' checkbox in the ROI selector UI.
+SKIP_CELL_DETECTION = False
 
 
 # `select_roi_and_show` moved to `roi_selector.py` to reduce main module size
@@ -32,12 +33,28 @@ if __name__ == '__main__':
                     return
 
             # Open ROI selector; it may return ('change_file', path)
+            # or (selector, store) or (selector, store, skip_detection_bool)
             result = select_roi_and_show(image_path)
-            if isinstance(result, tuple) and len(result) >= 1 and result[0] == 'change_file':
+            if isinstance(result, tuple) and result and result[0] == 'change_file':
                 image_path = result[1]
                 continue
 
-            selector, store = result
+            # Unpack selector/store and optional skip flag
+            skip_from_ui = False
+            if isinstance(result, tuple):
+                if len(result) == 2:
+                    selector, store = result
+                elif len(result) >= 3:
+                    selector, store = result[0], result[1]
+                    skip_from_ui = bool(result[2])
+                else:
+                    print('Unexpected result from ROI selector. Returning to file selection.')
+                    image_path = None
+                    continue
+            else:
+                print('Unexpected return type from ROI selector. Returning to file selection.')
+                image_path = None
+                continue
 
             if not (hasattr(selector, 'masked_img') and getattr(selector, 'masked_img') is not None):
                 print('No ROI selected. Returning to file selection.')
@@ -45,13 +62,14 @@ if __name__ == '__main__':
                 continue
 
             # Segmentation (optional)
-            if not SKIP_CELL_DETECTION:
-                seg_result = launch_cell_detector(selector.masked_img, image_path)
+            # Segmentation (optional) - can be skipped by global flag or UI checkbox
+            if not (SKIP_CELL_DETECTION or skip_from_ui):
+                seg_result = launch_cell_detector(selector.masked_img, image_path, store=store)
                 if isinstance(seg_result, tuple) and seg_result and seg_result[0] == 'change_file':
                     image_path = seg_result[1]
                     continue
             else:
-                print("\nCell detection skipped (SKIP_CELL_DETECTION = True)")
+                print("\nCell detection skipped (SKIP_CELL_DETECTION or UI checkbox)")
                 print("Opening subarea selector for pixel-threshold counts.")
 
             # Prepare ROI mask cropped for subarea selector

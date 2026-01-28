@@ -15,9 +15,101 @@ from startup import choose_image_file
 import sys
 
 
+# Helper wrappers for tkinter messageboxes that create a temporary hidden root
+def _mb_showinfo(title, message):
+    try:
+        root = tk.Tk()
+        root.withdraw()
+        try:
+            root.attributes('-topmost', True)
+        except Exception:
+            pass
+        try:
+            return messagebox.showinfo(title, message, parent=root)
+        finally:
+            try:
+                root.destroy()
+            except Exception:
+                pass
+    except Exception:
+        try:
+            return messagebox.showinfo(title, message)
+        except Exception:
+            return None
+
+
+def _mb_showerror(title, message):
+    try:
+        root = tk.Tk()
+        root.withdraw()
+        try:
+            root.attributes('-topmost', True)
+        except Exception:
+            pass
+        try:
+            return messagebox.showerror(title, message, parent=root)
+        finally:
+            try:
+                root.destroy()
+            except Exception:
+                pass
+    except Exception:
+        try:
+            return messagebox.showerror(title, message)
+        except Exception:
+            return None
+
+
+def _mb_askyesno(title, message, icon='question'):
+    try:
+        root = tk.Tk()
+        root.withdraw()
+        try:
+            root.attributes('-topmost', True)
+        except Exception:
+            pass
+        try:
+            return messagebox.askyesno(title, message, parent=root, icon=icon)
+        finally:
+            try:
+                root.destroy()
+            except Exception:
+                pass
+    except Exception:
+        try:
+            return messagebox.askyesno(title, message, icon=icon)
+        except Exception:
+            return False
+
+
 def launch_subarea_selector(image, image_path, roi_mask=None, roi_vertices=None, store=None):
     """Open a window to select multiple sub-areas using `InteractivePolygon`."""
     fig, ax = plt.subplots(figsize=(10, 8))
+    # Try to open the figure fullscreen / maximized where possible
+    try:
+        mgr = plt.get_current_fig_manager()
+        try:
+            win = mgr.window
+            try:
+                win.attributes('-fullscreen', True)
+            except Exception:
+                try:
+                    win.state('zoomed')
+                except Exception:
+                    try:
+                        mgr.window.showMaximized()
+                    except Exception:
+                        try:
+                            mgr.full_screen_toggle()
+                        except Exception:
+                            pass
+        except Exception:
+            try:
+                mgr.full_screen_toggle()
+            except Exception:
+                pass
+    except Exception:
+        pass
     # Make room on the right for buttons so the help text doesn't overlap the image
     plt.subplots_adjust(bottom=0.25, right=0.78, top=0.94)
     ax.imshow(image, cmap='gray')
@@ -63,6 +155,7 @@ def launch_subarea_selector(image, image_path, roi_mask=None, roi_vertices=None,
 
     subareas = []
     overlay_artists = []
+    saved_artists = []
     current_im_overlay = None
     overlays_visible = True
 
@@ -113,8 +206,195 @@ def launch_subarea_selector(image, image_path, roi_mask=None, roi_vertices=None,
                                   on_extract=on_extract_callback, close_on_extract=False,
                                   extra_instructions=sub_instructions)
 
+    def clear_saved_artists():
+        nonlocal saved_artists, overlay_artists
+        try:
+            for art in saved_artists:
+                try:
+                    art.remove()
+                except Exception:
+                    pass
+            saved_artists.clear()
+        except Exception:
+            pass
+
+        try:
+            # remove overlays tracked separately and clear the list
+            for art in list(overlay_artists):
+                try:
+                    art.remove()
+                except Exception:
+                    pass
+            overlay_artists.clear()
+        except Exception:
+            pass
+
+        try:
+            fig.canvas.draw_idle()
+        except Exception:
+            pass
+
+    def render_saved_subareas():
+        nonlocal saved_artists, overlay_artists
+        if store is None:
+            return
+        try:
+            existing = store.get('subareas', {}) or {}
+            if not isinstance(existing, dict):
+                existing = {}
+
+            for area_name, sa in existing.items():
+                try:
+                    verts = sa.get('vertices', [])
+                    if not verts or len(verts) < 3:
+                        continue
+
+                    try:
+                        patch = Polygon(np.array(verts), fill=False, edgecolor='green', linewidth=2)
+                        ax.add_patch(patch)
+                        saved_artists.append(patch)
+                    except Exception:
+                        pass
+
+                    try:
+                        label = area_name
+                        txt = ax.text(verts[0][0], verts[0][1], label, color='yellow', fontsize=10,
+                                      bbox=dict(facecolor='black', alpha=0.6))
+                        saved_artists.append(txt)
+                    except Exception:
+                        pass
+
+                    pass
+
+                except Exception as e:
+                    print(f"Error displaying saved subarea '{area_name}': {e}")
+
+            try:
+                fig.canvas.draw_idle()
+            except Exception:
+                pass
+        except Exception as e:
+            print(f"Failed to load saved subareas from AnalysisStore: {e}")
+
+    # render any saved subareas at startup
+    try:
+        render_saved_subareas()
+    except Exception:
+        pass
+
+    def delete_areas(event):
+        # Allow user to select one or more area names to delete from the store
+        if store is None:
+            _mb_showerror('No analysis JSON', 'No analysis JSON available to delete areas from.')
+            return
+
+        try:
+            existing = store.get('subareas', {}) or {}
+            if not isinstance(existing, dict) or len(existing) == 0:
+                _mb_showinfo('No saved areas', 'There are no saved areas to delete.')
+                return
+
+            names = list(existing.keys())
+
+            # Build a modal dialog using the matplotlib Tk parent when possible
+            parent = None
+            try:
+                parent = fig.canvas.manager.window
+            except Exception:
+                try:
+                    parent = fig.canvas.get_tk_widget().winfo_toplevel()
+                except Exception:
+                    parent = None
+
+            dlg_parent = parent
+            if dlg_parent is None:
+                # fallback to creating a temporary root
+                dlg_parent = tk.Tk()
+                dlg_parent.withdraw()
+
+            dlg = tk.Toplevel(dlg_parent)
+            dlg.title('Delete Areas')
+            try:
+                lbl = tk.Label(dlg, text='Select areas to delete:')
+                lbl.pack(padx=10, pady=(10, 0))
+                listbox = tk.Listbox(dlg, selectmode=tk.MULTIPLE, width=40, height=min(12, max(4, len(names))))
+                for n in names:
+                    listbox.insert(tk.END, n)
+                listbox.pack(padx=10, pady=10)
+
+                btn_frame = tk.Frame(dlg)
+                btn_frame.pack(padx=10, pady=(0, 10))
+
+                result = {'selected': None}
+
+                def on_delete_confirm():
+                    sel = [listbox.get(i) for i in listbox.curselection()]
+                    result['selected'] = sel
+                    dlg.destroy()
+
+                def on_cancel():
+                    dlg.destroy()
+
+                bdel = tk.Button(btn_frame, text='Delete', command=on_delete_confirm)
+                bdel.pack(side='left', padx=(0, 5))
+                bcan = tk.Button(btn_frame, text='Cancel', command=on_cancel)
+                bcan.pack(side='left')
+
+                dlg.transient(dlg_parent)
+                try:
+                    dlg.grab_set()
+                except Exception:
+                    pass
+                try:
+                    dlg.focus_force()
+                except Exception:
+                    pass
+                dlg.wait_window()
+            finally:
+                try:
+                    if parent is None:
+                        dlg_parent.destroy()
+                except Exception:
+                    pass
+
+            sel = result.get('selected')
+            if not sel:
+                return
+
+            # Confirm deletion
+            ok = _mb_askyesno('Confirm Delete', f"Delete {len(sel)} area(s)?", icon='warning')
+            if not ok:
+                return
+
+            # Delete selected keys and write back to store
+            try:
+                for name in sel:
+                    if name in existing:
+                        existing.pop(name, None)
+                # If no remaining entries, set to empty dict
+                store.set('subareas', existing)
+            except Exception as e:
+                _mb_showerror('Delete Failed', f'Failed to delete areas: {e}')
+                return
+
+            # Refresh displayed saved subareas
+            try:
+                clear_saved_artists()
+                render_saved_subareas()
+            except Exception as e:
+                print(f"Error refreshing display after delete: {e}")
+
+            _mb_showinfo('Deleted', f'Deleted {len(sel)} area(s).')
+        except Exception as e:
+            print(f"Error in delete_areas: {e}")
+
+
     ax_help_sub = plt.axes([0.81, 0.88, 0.15, 0.05])
     btn_help_sub = Button(ax_help_sub, 'Hide Help')
+
+    ax_delete = plt.axes([0.81, 0.64, 0.15, 0.05])
+    btn_delete = Button(ax_delete, 'Delete Area')
+    btn_delete.on_clicked(delete_areas)
 
     def _toggle_help_sub(event):
         try:
@@ -239,7 +519,8 @@ def launch_subarea_selector(image, image_path, roi_mask=None, roi_vertices=None,
 
     cid_key_sub = fig.canvas.mpl_connect('key_press_event', on_key_sub)
 
-    ax_info = plt.axes([0.81, 0.60, 0.15, 0.12])
+    # moved down to avoid overlapping the right-side buttons
+    ax_info = plt.axes([0.81, 0.46, 0.15, 0.12])
     ax_info.axis('off')
     info_text = ax_info.text(0.01, 0.98,
                              "Area: 0 px\nSelected: 0 px\n% Selected: 0.0%",
@@ -280,83 +561,165 @@ def launch_subarea_selector(image, image_path, roi_mask=None, roi_vertices=None,
                 area = int(np.count_nonzero(effective_mask))
                 mean_int = float(image[effective_mask].mean()) if area > 0 else 0.0
                 subareas.append({'vertices': np.array(current_verts).tolist(), 'count': count, 'area': area, 'mean': mean_int, 'threshold': float(thresh)})
-                try:
-                    patch = Polygon(np.array(current_verts), fill=False, edgecolor='blue', linewidth=2)
-                    ax.add_patch(patch)
-                    ax.text(current_verts[0][0], current_verts[0][1], str(count), color='yellow', fontsize=10,
-                            bbox=dict(facecolor='black', alpha=0.6))
-                except Exception:
-                    pass
             except Exception as e:
                 print(f"Error computing stats for current polygon: {e}")
 
         if len(subareas) == 0:
             print('No subareas to save')
             return
-        root = tk.Tk()
-        root.withdraw()
+        # Prefer using the matplotlib Tk parent if available to avoid creating extra Tk roots
+        parent = None
         try:
-            area_name = simpledialog.askstring('Area name', 'Enter area name:', initialvalue='area1', parent=root)
+            parent = fig.canvas.manager.window
+        except Exception:
+            try:
+                parent = fig.canvas.get_tk_widget().winfo_toplevel()
+            except Exception:
+                parent = None
+
+        try:
+            if parent is not None:
+                area_name = simpledialog.askstring('Area name', 'Enter area name:', initialvalue='area1', parent=parent)
+            else:
+                # Fallback to modal Toplevel when no parent available
+                root = tk.Tk()
+                root.withdraw()
+                dlg = tk.Toplevel(root)
+                dlg.title('Area name')
+                lbl = tk.Label(dlg, text='Enter area name:')
+                lbl.pack(padx=10, pady=(10, 0))
+                entry = tk.Entry(dlg)
+                entry.insert(0, 'area1')
+                entry.pack(padx=10, pady=10)
+                result = {'value': None}
+
+                def on_ok():
+                    v = entry.get().strip()
+                    result['value'] = v if v else None
+                    dlg.destroy()
+
+                def on_cancel():
+                    dlg.destroy()
+
+                btn_frame = tk.Frame(dlg)
+                btn_frame.pack(padx=10, pady=(0, 10))
+                bok = tk.Button(btn_frame, text='OK', command=on_ok)
+                bok.pack(side='left', padx=(0, 5))
+                bcan = tk.Button(btn_frame, text='Cancel', command=on_cancel)
+                bcan.pack(side='left')
+                dlg.transient(root)
+                try:
+                    dlg.grab_set()
+                except Exception:
+                    pass
+                try:
+                    dlg.focus_force()
+                except Exception:
+                    pass
+                dlg.wait_window()
+                area_name = result.get('value')
+                try:
+                    dlg.destroy()
+                except Exception:
+                    pass
+                try:
+                    root.destroy()
+                except Exception:
+                    pass
         except Exception:
             area_name = None
 
         if area_name is None:
             print('Save cancelled by user')
-            root.destroy()
+            return
+        # Only keep subarea information here; other metadata is stored elsewhere
+        # Store a single subarea per area name — use the last drawn subarea if multiple
+        if len(subareas) == 0:
+            print('No subareas to save')
+            try:
+                root.destroy()
+            except Exception:
+                pass
             return
 
-        # Only keep subarea information here; other metadata is stored elsewhere
-        payload = []
-
-        for idx, sa in enumerate(subareas, 1):
-            verts = sa.get('vertices', [])
-            area_px = int(sa.get('area', 0))
-            selected = int(sa.get('count', 0))
-            pct = (selected / area_px * 100.0) if area_px > 0 else 0.0
-            thresh = float(sa.get('threshold', 0.0))
-            mean_int = float(sa.get('mean', 0.0))
-            payload.append({
-                'areaname': area_name,
-                'subarea_id': idx,
-                'vertices': verts,
-                'area_pixels': area_px,
-                'selected_pixels': selected,
-                'percent_selected': round(pct, 2),
-                'threshold': thresh,
-                'mean_intensity': mean_int
-            })
+        sa = subareas[-1]
+        verts = sa.get('vertices', [])
+        area_px = int(sa.get('area', 0))
+        selected = int(sa.get('count', 0))
+        pct = (selected / area_px * 100.0) if area_px > 0 else 0.0
+        thresh = float(sa.get('threshold', 0.0))
+        mean_int = float(sa.get('mean', 0.0))
+        payload = {
+            'vertices': verts,
+            'area_pixels': area_px,
+            'selected_pixels': selected,
+            'percent_selected': round(pct, 2),
+            'threshold': thresh,
+            'mean_intensity': mean_int
+        }
 
         try:
             if store is not None:
-                # Only save subareas into the AnalysisStore; other keys are managed elsewhere
+                # Save subareas into the AnalysisStore as a mapping: areaname -> list of subarea objects
                 try:
-                    store.set('subareas', payload)
+                    existing = store.get('subareas', {}) or {}
+                    # ensure we're working with a dict
+                    if not isinstance(existing, dict):
+                        existing = {}
+
+                    # If an entry with this area name exists, ask before overwriting
+                    if area_name in existing:
+                        try:
+                            overwrite = _mb_askyesno('Overwrite Subareas', f"Subareas named '{area_name}' already exist in the analysis file. Overwrite them?", icon='warning')
+                        except Exception:
+                            overwrite = False
+
+                        if not overwrite:
+                            print('Save cancelled by user (did not overwrite existing subareas).')
+                            return
+
+                    # Replace (or add) the entry for this area name with the new single subarea object
+                    existing[area_name] = payload
+                    store.set('subareas', existing)
+
+                    # Refresh displayed saved subareas so updates replace previous drawings
+                    try:
+                        clear_saved_artists()
+                        render_saved_subareas()
+                    except Exception as e:
+                        print(f"Error refreshing displayed subareas after save: {e}")
+
+                    # Clear the interactive polygon so user can start a new selection
+                    try:
+                        selector.vertices = []
+                        selector.update_plot()
+                    except Exception:
+                        pass
+
                     print(f"Subarea results saved to analysis JSON: {store.filename}")
                     try:
-                        messagebox.showinfo('Save Complete', f"Subarea results saved to:\n{os.path.basename(store.filename)}", parent=root)
+                        _mb_showinfo('Save Complete', f"Subarea results saved to:\n{os.path.basename(store.filename)}")
                     except Exception:
                         pass
                 except Exception as e:
                     print(f"Failed to save subareas to AnalysisStore: {e}")
             else:
-                root.destroy()
+                try:
+                    root.destroy()
+                except Exception:
+                    pass
                 raise FileNotFoundError(f"No analysis JSON found for image: {image_path}; cannot save subareas")
         except Exception as e:
             print(f"Failed to write JSON file: {e}")
         finally:
-            root.destroy()
+            try:
+                root.destroy()
+            except Exception:
+                pass
 
     def finish(event):
         try:
-            root = tk.Tk()
-            root.withdraw()
-            resp = messagebox.askyesno(
-                "Finished",
-                "Do you want to continue?.\n\nYes = Select another file\nNo = Close the app",
-                parent=root,
-                icon='question'
-            )
-            root.destroy()
+            resp = _mb_askyesno("Finished", "Do you want to continue?.\n\nYes = Select another file\nNo = Close the app", icon='question')
         except Exception:
             resp = False
 

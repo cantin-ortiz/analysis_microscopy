@@ -11,7 +11,7 @@ import sys
 
 from interactive import InteractivePolygon
 from analysis_store import AnalysisStore
-from matplotlib.widgets import Button
+from matplotlib.widgets import Button, CheckButtons
 from startup import choose_image_file
 
 
@@ -75,6 +75,31 @@ def select_roi_and_show(image_path="Hipp2.1.tiff"):
     # No CSV fallback: polygon coordinates are stored in the analysis JSON only
 
     fig, ax = plt.subplots(figsize=(12, 10))
+    # Try to open the figure fullscreen / maximized where possible
+    try:
+        mgr = plt.get_current_fig_manager()
+        try:
+            win = mgr.window
+            try:
+                win.attributes('-fullscreen', True)
+            except Exception:
+                try:
+                    win.state('zoomed')
+                except Exception:
+                    try:
+                        mgr.window.showMaximized()
+                    except Exception:
+                        try:
+                            mgr.full_screen_toggle()
+                        except Exception:
+                            pass
+        except Exception:
+            try:
+                mgr.full_screen_toggle()
+            except Exception:
+                pass
+    except Exception:
+        pass
     ax.imshow(image, cmap='gray')
     title = 'Draw polygon ROI - See instructions in top-left corner'
     if initial_vertices:
@@ -182,10 +207,25 @@ def select_roi_and_show(image_path="Hipp2.1.tiff"):
 
     btn_change.on_clicked(_change_file)
 
+    # Checkbox to allow skipping cell detection in downstream pipeline
+    skip_detection = {'value': False}
+
+    check_ax = plt.axes([0.84, 0.68, 0.12, 0.06])
+    check = CheckButtons(check_ax, ['Skip segmentation'], [False])
+
+    def _on_toggle_skip(label):
+        try:
+            status = check.get_status()[0]
+            skip_detection['value'] = bool(status)
+        except Exception:
+            pass
+
+    check.on_clicked(_on_toggle_skip)
+
     fig.canvas.draw()
     plt.show()
 
     if change_request.get('path'):
         return ('change_file', change_request['path'])
 
-    return selector, store
+    return selector, store, skip_detection.get('value', False)

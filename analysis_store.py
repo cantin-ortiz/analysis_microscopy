@@ -46,7 +46,7 @@ class AnalysisStore:
                 "filename": self.filename,
                 "creation_time": datetime.now().isoformat(),
                 "roi_polygon": [],
-                "subareas": [],
+                "subareas": {},
                 "segmented_cells": []
             }
             self.save()
