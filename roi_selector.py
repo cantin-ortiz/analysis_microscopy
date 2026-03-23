@@ -16,7 +16,7 @@ except ImportError:
 
 from interactive import InteractivePolygon
 from analysis_store import AnalysisStore
-from matplotlib.widgets import Button, CheckButtons
+from matplotlib.widgets import Button, CheckButtons, Slider
 from startup import choose_image_file
 
 
@@ -166,14 +166,70 @@ def select_roi_and_show(image_path="Hipp2.1.tiff"):
             pass
     except Exception:
         pass
-    ax.imshow(image, cmap='gray')
+    
+    # Store original image for brightness/contrast adjustments
+    image_original = image.copy()
+    image_min, image_max = float(image.min()), float(image.max())
+    
+    # Load saved brightness/contrast values from store
+    saved_brightness = store.get('brightness', 0)
+    saved_contrast = store.get('contrast', 1.0)
+    
+    # Display image
+    im_display = ax.imshow(image, cmap='gray', vmin=image_min, vmax=image_max)
     title = 'Draw polygon ROI - See instructions in top-left corner'
     if initial_vertices:
         title += ' (LOADED EXISTING POLYGON)'
     ax.set_title(title, fontweight='bold')
     ax.axis('off')
 
-    plt.subplots_adjust(right=0.82, top=0.95)
+    # Adjust layout to make room for sliders on the left and buttons on the right
+    plt.subplots_adjust(left=0.15, right=0.82, top=0.95)
+    
+    # Brightness slider (left side)
+    ax_brightness = plt.axes([0.02, 0.25, 0.02, 0.6])
+    slider_brightness = Slider(
+        ax_brightness, 'Brightness', -100, 100, valinit=saved_brightness, 
+        orientation='vertical', valstep=1
+    )
+    
+    # Contrast slider (left side)
+    ax_contrast = plt.axes([0.06, 0.25, 0.02, 0.6])
+    slider_contrast = Slider(
+        ax_contrast, 'Contrast', 0.1, 3.0, valinit=saved_contrast, 
+        orientation='vertical', valstep=0.05
+    )
+    
+    def update_image_display(val=None):
+        """Update image display based on brightness and contrast sliders"""
+        try:
+            brightness = slider_brightness.val
+            contrast = slider_contrast.val
+            
+            # Save to store after every adjustment
+            store.set('brightness', brightness)
+            store.set('contrast', contrast)
+            
+            # Apply contrast (multiply) then brightness (add)
+            # Contrast adjustment around the midpoint
+            img_mid = (image_min + image_max) / 2.0
+            adjusted = (image_original - img_mid) * contrast + img_mid + brightness
+            
+            # Clip to valid range
+            adjusted = np.clip(adjusted, image_min, image_max)
+            
+            # Update displayed image
+            im_display.set_data(adjusted)
+            fig.canvas.draw_idle()
+        except Exception as e:
+            print(f"Error updating image display: {e}")
+    
+    slider_brightness.on_changed(update_image_display)
+    slider_contrast.on_changed(update_image_display)
+    
+    # Apply initial brightness/contrast if values were loaded
+    if saved_brightness != 0 or saved_contrast != 1.0:
+        update_image_display()
 
     def _on_extract_callback(sel):
         # Save to analysis JSON. Only prompt if a non-empty stored polygon exists

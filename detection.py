@@ -37,8 +37,16 @@ def launch_cell_detector(roi_image, image_path, store=None):
             pass
     except Exception:
         pass
-    # Make room on the right for controls so buttons don't overlap the image
-    plt.subplots_adjust(bottom=0.25, right=0.78, top=0.95)
+    # Make room on the left for sliders and right for controls
+    plt.subplots_adjust(left=0.15, bottom=0.25, right=0.78, top=0.95)
+
+    # Store original image for brightness/contrast adjustments
+    image_original = roi_image.copy()
+    image_min, image_max = float(roi_image.min()), float(roi_image.max())
+    
+    # Load saved brightness/contrast values from store if available
+    saved_brightness = store.get('brightness', 0) if store else 0
+    saved_contrast = store.get('contrast', 1.0) if store else 1.0
 
     # Initial parameters for Cellpose
     initial_diameter = 30
@@ -55,10 +63,53 @@ def launch_cell_detector(roi_image, image_path, store=None):
 
     det_image = roi_image
     det_ax = ax
-    det_im = ax.imshow(roi_image, cmap='gray')
+    det_im = ax.imshow(roi_image, cmap='gray', vmin=image_min, vmax=image_max)
     det_circles = []
     outlines_visible = True
     detected_cells = np.empty((0, 4))
+    
+    # Brightness slider (left side)
+    ax_brightness = plt.axes([0.02, 0.35, 0.02, 0.5])
+    slider_brightness = Slider(
+        ax_brightness, 'Brightness', -100, 100, valinit=saved_brightness,
+        orientation='vertical', valstep=1
+    )
+    
+    # Contrast slider (left side)
+    ax_contrast = plt.axes([0.06, 0.35, 0.02, 0.5])
+    slider_contrast = Slider(
+        ax_contrast, 'Contrast', 0.1, 3.0, valinit=saved_contrast,
+        orientation='vertical', valstep=0.05
+    )
+    
+    def update_image_display(val=None):
+        """Update image display based on brightness and contrast sliders"""
+        try:
+            brightness = slider_brightness.val
+            contrast = slider_contrast.val
+            
+            # Save to store after every adjustment
+            if store:
+                store.set('brightness', brightness)
+                store.set('contrast', contrast)
+            
+            # Apply contrast (multiply) then brightness (add)
+            img_mid = (image_min + image_max) / 2.0
+            adjusted = (image_original - img_mid) * contrast + img_mid + brightness
+            adjusted = np.clip(adjusted, image_min, image_max)
+            
+            # Update displayed image
+            det_im.set_data(adjusted)
+            fig.canvas.draw_idle()
+        except Exception as e:
+            print(f"Error updating image display: {e}")
+    
+    slider_brightness.on_changed(update_image_display)
+    slider_contrast.on_changed(update_image_display)
+    
+    # Apply initial brightness/contrast if values were loaded
+    if saved_brightness != 0 or saved_contrast != 1.0:
+        update_image_display()
 
     def detect_cells():
         nonlocal det_circles, detected_cells
