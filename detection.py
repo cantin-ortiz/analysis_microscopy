@@ -20,29 +20,21 @@ def launch_cell_detector(roi_image, image_path, store=None):
 
     # Create new figure for cell detection
     fig, ax = plt.subplots(figsize=(12, 10))
-    # Try to open the figure fullscreen / maximized where possible
+    # Try to open the figure maximized (preserves window controls on Windows)
     try:
         mgr = plt.get_current_fig_manager()
         try:
             win = mgr.window
             try:
-                win.attributes('-fullscreen', True)
+                # Try Windows 'zoomed' first (preserves title bar with min/max/close buttons)
+                win.state('zoomed')
             except Exception:
                 try:
-                    win.state('zoomed')
+                    mgr.window.showMaximized()
                 except Exception:
-                    try:
-                        mgr.window.showMaximized()
-                    except Exception:
-                        try:
-                            mgr.full_screen_toggle()
-                        except Exception:
-                            pass
+                    pass
         except Exception:
-            try:
-                mgr.full_screen_toggle()
-            except Exception:
-                pass
+            pass
     except Exception:
         pass
     # Make room on the right for controls so buttons don't overlap the image
