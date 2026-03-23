@@ -49,6 +49,10 @@ def launch_cell_detector(roi_image, image_path, store=None):
     saved_contrast = store.get('contrast', 1.0) if store else 1.0
 
     # Initial parameters for Cellpose
+    # diameter: Expected cell diameter in pixels (used to rescale image to ~30px per cell)
+    # flow_threshold: Flow error threshold - cells with errors below this are kept (default 0.4)
+    # cellprob_threshold: Cell probability threshold - pixels above this are kept for masks (decrease to find more/larger masks)
+    # min_size: Minimum area in pixels - cells smaller than this are discarded
     initial_diameter = 30
     initial_flow_threshold = 0.4
     initial_cellprob_threshold = 0.0
@@ -123,15 +127,18 @@ def launch_cell_detector(roi_image, image_path, store=None):
         if CELLPOSE_MODEL is None:
             print("Loading Cellpose model (first run may take a moment)...")
             from cellpose import models
-            CELLPOSE_MODEL = models.CellposeModel(gpu=True)
+            # Using generic model - consider specifying model_type='cyto3' for cytoplasm or 'nuclei' for nuclei
+            CELLPOSE_MODEL = models.CellposeModel(gpu=True, model_type='cyto3')
             print(f"Cellpose will use GPU: {CELLPOSE_MODEL.gpu}")
+            print(f"Cellpose model type: cyto3")
 
         print("Running Cellpose segmentation (this may take 30-60 seconds on CPU)...")
         result = CELLPOSE_MODEL.eval(
             det_image,
             diameter=detection_params['diameter'],
             flow_threshold=detection_params['flow_threshold'],
-            cellprob_threshold=detection_params['cellprob_threshold']
+            cellprob_threshold=detection_params['cellprob_threshold'],
+            min_size=detection_params['min_size']  # Pass min_size to Cellpose for efficiency
         )
 
         if len(result) == 4:
@@ -142,6 +149,7 @@ def launch_cell_detector(roi_image, image_path, store=None):
         from skimage.measure import regionprops
         regions = regionprops(masks)
 
+        # Note: min_size filtering is now handled by Cellpose, but we keep this for additional control
         min_area = detection_params['min_size']
         filtered_cells = []
 
