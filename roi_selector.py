@@ -8,6 +8,11 @@ from matplotlib import pyplot as plt
 import tkinter as tk
 from tkinter import messagebox
 import sys
+try:
+    import czifile
+    CZI_AVAILABLE = True
+except ImportError:
+    CZI_AVAILABLE = False
 
 from interactive import InteractivePolygon
 from analysis_store import AnalysisStore
@@ -15,9 +20,78 @@ from matplotlib.widgets import Button, CheckButtons
 from startup import choose_image_file
 
 
+def load_image(image_path):
+    """Load image from .tif/.tiff or .czi file."""
+    _, ext = os.path.splitext(image_path.lower())
+    
+    if ext == '.czi':
+        if not CZI_AVAILABLE:
+            raise ImportError("czifile library is not installed. Install it with: pip install czifile")
+        
+        # Read CZI file
+        with czifile.CziFile(image_path) as czi:
+            image_data = czi.asarray()
+            print(f"CZI original shape: {image_data.shape}, dtype: {image_data.dtype}")
+            
+            # CZI files often have shape like (1, 1, C, Z, Y, X, 1) or similar
+            # We need to squeeze out singleton dimensions and select appropriate slice
+            image_data = np.squeeze(image_data)
+            print(f"After squeeze: {image_data.shape}")
+            
+            # If still multi-dimensional after squeeze, we need to be smarter about selection
+            # Common CZI dimension orders: (C, Z, Y, X) or (Z, C, Y, X) or (C, Y, X) etc.
+            if image_data.ndim > 2:
+                # Try to find the 2D image plane
+                # Last two dimensions are typically Y, X (height, width)
+                # If we have more dimensions, try different strategies
+                
+                if image_data.ndim == 3:
+                    # Could be (C, Y, X) or (Z, Y, X)
+                    # Take max projection along first axis if it's small (likely channels/z-stack)
+                    if image_data.shape[0] <= 10:
+                        print(f"Taking max projection along axis 0 (size {image_data.shape[0]})")
+                        image_data = np.max(image_data, axis=0)
+                    else:
+                        # First dimension is likely spatial, take the middle slice
+                        mid_idx = image_data.shape[0] // 2
+                        print(f"Taking middle slice {mid_idx} from axis 0")
+                        image_data = image_data[mid_idx]
+                        
+                elif image_data.ndim == 4:
+                    # Could be (C, Z, Y, X) - take max projection over Z, first channel
+                    print(f"4D data: taking max projection")
+                    # Take first channel
+                    image_data = image_data[0]
+                    # Max project over remaining axis if not 2D yet
+                    if image_data.ndim > 2:
+                        image_data = np.max(image_data, axis=0)
+                        
+                else:
+                    # For higher dimensions, keep reducing
+                    while image_data.ndim > 2:
+                        image_data = image_data[0]
+            
+            print(f"Final CZI shape: {image_data.shape}, dtype: {image_data.dtype}")
+            print(f"CZI value range: [{image_data.min()}, {image_data.max()}]")
+            
+            # Convert to float and normalize if needed for display
+            # Some CZI files may have unusual data types or ranges
+            if image_data.dtype == np.uint16 or image_data.max() > 255:
+                # Normalize to 0-255 range for better display
+                img_min, img_max = image_data.min(), image_data.max()
+                if img_max > img_min:
+                    image_data = ((image_data - img_min) / (img_max - img_min) * 255).astype(np.uint8)
+                    print(f"Normalized to uint8 range [0, 255]")
+            
+            return image_data
+    else:
+        # Load TIFF or other formats with skimage
+        return io.imread(image_path)
+
+
 def select_roi_and_show(image_path="Hipp2.1.tiff"):
     """Load image, handle existing polygon prompt, show main ROI selector and return the selector."""
-    image = io.imread(image_path)
+    image = load_image(image_path)
 
     # Handle multi-channel or z-stack images
     if image.ndim > 2:

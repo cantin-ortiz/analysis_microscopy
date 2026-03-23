@@ -3,6 +3,7 @@
 *.tiff
 *.tif
 *.json
+*.czi
 
 # Python cache
 __pycache__/

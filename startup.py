@@ -25,8 +25,10 @@ def choose_image_file(initialfile='Hipp2.1.tiff', initialdir=None, filetypes=Non
             initialdir = os.getcwd()
         if filetypes is None:
             filetypes = [
+                ('Microscopy files', '*.tif *.tiff *.czi'),
                 ('TIFF files', '*.tif *.tiff'),
-                ('All images', '*.png *.jpg *.jpeg *.tif *.tiff'),
+                ('CZI files', '*.czi'),
+                ('All images', '*.png *.jpg *.jpeg *.tif *.tiff *.czi'),
                 ('All files', '*.*')
             ]
         path = filedialog.askopenfilename(title=title, initialdir=initialdir, initialfile=initialfile, filetypes=filetypes)
