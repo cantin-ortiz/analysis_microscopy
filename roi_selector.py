@@ -3,7 +3,7 @@ ROI selector helper moved out of `main.py`.
 """
 import os
 import numpy as np
-from skimage import io
+from skimage import io, transform
 from matplotlib import pyplot as plt
 import tkinter as tk
 from tkinter import messagebox
@@ -18,6 +18,41 @@ from interactive import InteractivePolygon
 from analysis_store import AnalysisStore
 from matplotlib.widgets import Button, CheckButtons, Slider
 from startup import choose_image_file
+
+
+def downsample_if_large(image, max_dimension=2000):
+    """Downsample image if either dimension exceeds max_dimension.
+    
+    Args:
+        image: 2D numpy array (grayscale image)
+        max_dimension: maximum allowed dimension before downsampling
+        
+    Returns:
+        Downsampled image if needed, otherwise original image
+        Prints a message if downsampling occurs
+    """
+    height, width = image.shape[:2]
+    
+    if height <= max_dimension and width <= max_dimension:
+        return image
+    
+    # Calculate scale factor to fit within max_dimension
+    scale_factor = min(max_dimension / height, max_dimension / width)
+    new_height = int(height * scale_factor)
+    new_width = int(width * scale_factor)
+    
+    print(f"\nDownsampling image from {height}x{width} to {new_height}x{new_width} (scale: {scale_factor:.3f})")
+    print(f"Original size exceeds {max_dimension}x{max_dimension} threshold")
+    
+    # Use anti_aliasing to prevent artifacts
+    downsampled = transform.resize(image, (new_height, new_width), 
+                                   preserve_range=True, 
+                                   anti_aliasing=True)
+    
+    # Preserve original dtype
+    downsampled = downsampled.astype(image.dtype)
+    
+    return downsampled
 
 
 def load_image(image_path):
@@ -83,10 +118,11 @@ def load_image(image_path):
                     image_data = ((image_data - img_min) / (img_max - img_min) * 255).astype(np.uint8)
                     print(f"Normalized to uint8 range [0, 255]")
             
-            return image_data
+            return downsample_if_large(image_data)
     else:
         # Load TIFF or other formats with skimage
-        return io.imread(image_path)
+        image = io.imread(image_path)
+        return downsample_if_large(image)
 
 
 def select_roi_and_show(image_path="Hipp2.1.tiff"):
@@ -109,6 +145,9 @@ def select_roi_and_show(image_path="Hipp2.1.tiff"):
                 # It's a z-stack (Z, H, W), use max projection
                 image = np.max(image, axis=0)
                 print(f"Using max projection, shape: {image.shape}")
+    
+    # Downsample if the image is too large (after channel/z-stack processing)
+    image = downsample_if_large(image)
 
     # Display basic information about the image
     print(f"\nImage shape: {image.shape}")
