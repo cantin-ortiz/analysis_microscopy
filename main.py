@@ -64,7 +64,8 @@ if __name__ == '__main__':
             # Segmentation (optional)
             # Segmentation (optional) - can be skipped by global flag or UI checkbox
             if not (SKIP_CELL_DETECTION or skip_from_ui):
-                seg_result = launch_cell_detector(selector.masked_img, image_path, store=store)
+                _um2 = getattr(selector, 'um2_per_pixel', None)
+                seg_result = launch_cell_detector(selector.masked_img, image_path, store=store, um2_per_pixel=_um2)
                 if isinstance(seg_result, tuple) and seg_result and seg_result[0] == 'change_file':
                     image_path = seg_result[1]
                     continue

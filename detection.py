@@ -4,7 +4,7 @@ Cell detection (StarDist) module
 import numpy as np
 from matplotlib import pyplot as plt
 from matplotlib.patches import Circle
-from matplotlib.widgets import Slider, Button
+from matplotlib.widgets import Slider, Button, RangeSlider
 import os
 import tkinter as tk
 from tkinter import messagebox
@@ -24,7 +24,7 @@ def _load_stardist_model():
     return STARDIST_MODEL
 
 
-def launch_cell_detector(roi_image, image_path, store=None):
+def launch_cell_detector(roi_image, image_path, store=None, um2_per_pixel=None):
     """Launch interactive cell detection interface using StarDist."""
 
     # Create new figure for cell detection
@@ -46,7 +46,7 @@ def launch_cell_detector(roi_image, image_path, store=None):
     except Exception:
         pass
     # Make room on the left for sliders and right for controls
-    plt.subplots_adjust(left=0.15, bottom=0.25, right=0.78, top=0.95)
+    plt.subplots_adjust(left=0.15, bottom=0.30, right=0.78, top=0.95)
 
     # Store original image for brightness/contrast adjustments
     image_original = roi_image.copy()
@@ -60,17 +60,31 @@ def launch_cell_detector(roi_image, image_path, store=None):
     # prob_thresh: probability threshold — lower → more detections (default ~0.48)
     # nms_thresh:  non-maximum suppression overlap threshold (default 0.3)
     # scale:       rescale factor sent to StarDist (None = auto)
-    # min_size:    post-filter: discard objects smaller than this many pixels
     initial_prob_thresh = 0.48
     initial_nms_thresh = 0.3
     initial_scale = 1.0
-    initial_min_size = 50
+
+    # Area / fluorescence display units
+    if um2_per_pixel is not None and um2_per_pixel > 0:
+        area_factor = um2_per_pixel   # px² × area_factor → µm²
+        area_unit = 'µm²'
+    else:
+        area_factor = 1.0
+        area_unit = 'px²'
+
+    # Area range defaults (in pixels)
+    initial_area_min_px = 50
+    initial_area_max_px = 5000
+    # Fluorescence range defaults (image intensity)
+    initial_fluor_min = 0.0
+    initial_fluor_max = float(roi_image.max())
 
     detection_params = {
         'prob_thresh': initial_prob_thresh,
         'nms_thresh': initial_nms_thresh,
         'scale': initial_scale,
-        'min_size': initial_min_size,
+        'area_range_px': [initial_area_min_px, initial_area_max_px],
+        'fluor_range': [initial_fluor_min, initial_fluor_max],
     }
 
     det_image = roi_image
@@ -78,7 +92,8 @@ def launch_cell_detector(roi_image, image_path, store=None):
     det_im = ax.imshow(roi_image, cmap='gray', vmin=image_min, vmax=image_max)
     det_circles = []
     outlines_visible = True
-    detected_cells = np.empty((0, 4))
+    detected_cells = np.empty((0, 5))   # (y, x, r, area_px, mean_intensity)
+    all_detected = []                    # all regions before area/fluor filtering
 
     # Brightness slider (left side)
     ax_brightness = plt.axes([0.02, 0.35, 0.02, 0.5])
@@ -119,17 +134,51 @@ def launch_cell_detector(roi_image, image_path, store=None):
     if saved_brightness != 0 or saved_contrast != 1.0:
         update_image_display()
 
-    # ---- StarDist detection --------------------------------------------------
-    def detect_cells():
+    # ---- StarDist detection + filtering --------------------------------------
+    def apply_filters():
+        """Filter all_detected by area- and fluorescence-range sliders."""
         nonlocal det_circles, detected_cells
-        # Remove previous circles
         for circle in det_circles:
             circle.remove()
         det_circles = []
 
+        # Area range (display units → pixels)
+        area_lo_disp, area_hi_disp = slider_area.val
+        area_lo_px = area_lo_disp / area_factor
+        area_hi_px = area_hi_disp / area_factor
+        # Fluorescence range
+        fluor_lo, fluor_hi = slider_fluor.val
+
+        filtered = []
+        for y, x, r, area_px, mean_int in all_detected:
+            if area_lo_px <= area_px <= area_hi_px and fluor_lo <= mean_int <= fluor_hi:
+                filtered.append((y, x, r, area_px, mean_int))
+
+        detected_cells = np.array(filtered) if filtered else np.empty((0, 5))
+
+        for cell in filtered:
+            circle = Circle((cell[1], cell[0]), cell[2],
+                            fill=False, edgecolor='red', linewidth=2, alpha=0.8)
+            det_ax.add_patch(circle)
+            det_circles.append(circle)
+
+        for circle in det_circles:
+            circle.set_visible(outlines_visible)
+
+        status = "VISIBLE" if outlines_visible else "HIDDEN"
+        det_ax.set_title(
+            f'Cell Detection (StarDist): {len(filtered)}/{len(all_detected)} cells - Outlines {status}',
+            fontsize=14, fontweight='bold',
+        )
+        det_ax.axis('off')
+        fig.canvas.draw_idle()
+
+    def detect_cells():
+        """Run StarDist segmentation, populate all_detected, then filter."""
+        nonlocal all_detected
+
         model = _load_stardist_model()
 
-        # Normalize image to [0, 1] for StarDist
         from csbdeep.utils import normalize
         img_norm = normalize(det_image, 1, 99.8)
 
@@ -144,46 +193,41 @@ def launch_cell_detector(roi_image, image_path, store=None):
         )
 
         from skimage.measure import regionprops
-        regions = regionprops(labels)
+        regions = regionprops(labels, intensity_image=det_image)
 
-        min_area = detection_params['min_size']
-        filtered_cells = []
-
+        all_detected = []
         for region in regions:
-            if region.area >= min_area:
-                y, x = region.centroid
-                r = np.sqrt(region.area / np.pi)
-                filtered_cells.append((y, x, r, region.area))
+            y, x = region.centroid
+            r = np.sqrt(region.area / np.pi)
+            all_detected.append((y, x, r, float(region.area), float(region.mean_intensity)))
 
-        detected_cells = np.array(filtered_cells) if len(filtered_cells) > 0 else np.empty((0, 4))
-
-        for y, x, r, area in filtered_cells:
-            circle = Circle((x, y), r, fill=False, edgecolor='red', linewidth=2, alpha=0.8)
-            det_ax.add_patch(circle)
-            det_circles.append(circle)
-
-        for circle in det_circles:
-            circle.set_visible(outlines_visible)
-
-        status = "VISIBLE" if outlines_visible else "HIDDEN"
-        det_ax.set_title(
-            f'Cell Detection (StarDist): {len(filtered_cells)} cells detected - Outlines {status}',
-            fontsize=14, fontweight='bold',
-        )
-        det_ax.axis('off')
-        print(f"\nDetected {len(filtered_cells)} cells using StarDist")
+        apply_filters()
+        n_filt = len(detected_cells)
+        print(f"\nStarDist: {len(all_detected)} objects, {n_filt} after filtering")
 
     # ---- Sliders -------------------------------------------------------------
     slider_width = 0.63
-    ax_prob = plt.axes([0.15, 0.15, slider_width, 0.03])
-    ax_nms = plt.axes([0.15, 0.11, slider_width, 0.03])
-    ax_scale = plt.axes([0.15, 0.07, slider_width, 0.03])
-    ax_min_size = plt.axes([0.15, 0.03, slider_width, 0.03])
+    ax_prob  = plt.axes([0.15, 0.23, slider_width, 0.03])
+    ax_nms   = plt.axes([0.15, 0.19, slider_width, 0.03])
+    ax_scale = plt.axes([0.15, 0.15, slider_width, 0.03])
+    ax_area  = plt.axes([0.15, 0.08, slider_width, 0.03])
+    ax_fluor = plt.axes([0.15, 0.03, slider_width, 0.03])
 
     slider_prob = Slider(ax_prob, 'Prob Threshold', 0.01, 0.99, valinit=initial_prob_thresh, valstep=0.01)
     slider_nms = Slider(ax_nms, 'NMS Threshold', 0.01, 0.99, valinit=initial_nms_thresh, valstep=0.01)
     slider_scale = Slider(ax_scale, 'Scale', 0.25, 4.0, valinit=initial_scale, valstep=0.05)
-    slider_min_size = Slider(ax_min_size, 'Min Area (px²)', 0, 500, valinit=initial_min_size, valstep=5)
+    slider_area = RangeSlider(
+        ax_area, f'Area ({area_unit})',
+        0, initial_area_max_px * area_factor,
+        valinit=(initial_area_min_px * area_factor, initial_area_max_px * area_factor),
+    )
+    slider_fluor = RangeSlider(
+        ax_fluor, 'Fluorescence',
+        initial_fluor_min, initial_fluor_max,
+        valinit=(initial_fluor_min, initial_fluor_max),
+    )
+    slider_area.on_changed(lambda val: apply_filters())
+    slider_fluor.on_changed(lambda val: apply_filters())
 
     # ---- Load from store? ----------------------------------------------------
     loaded_from_store = False
@@ -224,23 +268,32 @@ def launch_cell_detector(roi_image, image_path, store=None):
                         saved_settings = getattr(store, 'data', {}).get('cell_detection_settings') if hasattr(store, 'data') else None
 
                     if isinstance(saved_settings, dict):
-                        for k in ('prob_thresh', 'nms_thresh', 'scale', 'min_size'):
+                        for k in ('prob_thresh', 'nms_thresh', 'scale'):
                             if k in saved_settings:
                                 try:
                                     detection_params[k] = saved_settings[k]
                                 except Exception:
                                     pass
+                        if 'area_range_px' in saved_settings:
+                            detection_params['area_range_px'] = saved_settings['area_range_px']
+                        elif 'min_size' in saved_settings:
+                            detection_params['area_range_px'][0] = saved_settings['min_size']
+                        if 'fluor_range' in saved_settings:
+                            detection_params['fluor_range'] = saved_settings['fluor_range']
 
                     # Apply settings to sliders
                     try:
                         slider_prob.set_val(detection_params['prob_thresh'])
                         slider_nms.set_val(detection_params['nms_thresh'])
                         slider_scale.set_val(detection_params['scale'])
-                        slider_min_size.set_val(detection_params['min_size'])
+                        ar = detection_params['area_range_px']
+                        slider_area.set_val((ar[0] * area_factor, ar[1] * area_factor))
+                        fr = detection_params['fluor_range']
+                        slider_fluor.set_val((fr[0], fr[1]))
                     except Exception:
                         pass
 
-                    # Populate detected_cells from store
+                    # Populate detected_cells and all_detected from store
                     try:
                         parsed = []
                         for item in existing_cells:
@@ -248,10 +301,16 @@ def launch_cell_detector(roi_image, image_path, store=None):
                             y = float(item.get('y', item.get('cy', 0)))
                             r = float(item.get('radius', item.get('r', 0)))
                             area = float(item.get('area', 0))
-                            parsed.append((y, x, r, area))
-                        detected_cells = np.array(parsed) if len(parsed) > 0 else np.empty((0, 4))
+                            mean_int = float(item.get('mean_fluorescence', 0))
+                            if mean_int == 0:
+                                iy, ix = int(round(y)), int(round(x))
+                                if 0 <= iy < det_image.shape[0] and 0 <= ix < det_image.shape[1]:
+                                    mean_int = float(det_image[iy, ix])
+                            parsed.append((y, x, r, area, mean_int))
+                        all_detected = parsed.copy()
+                        detected_cells = np.array(parsed) if len(parsed) > 0 else np.empty((0, 5))
                     except Exception:
-                        detected_cells = np.empty((0, 4))
+                        detected_cells = np.empty((0, 5))
 
                     # Render loaded detections (no StarDist run)
                     def render_loaded_cells():
@@ -262,8 +321,9 @@ def launch_cell_detector(roi_image, image_path, store=None):
                             except Exception:
                                 pass
                         det_circles = []
-                        for y, x, r, area in (detected_cells if detected_cells.size else []):
+                        for row in (detected_cells if detected_cells.size else []):
                             try:
+                                y, x, r = float(row[0]), float(row[1]), float(row[2])
                                 circle = Circle((x, y), r, fill=False, edgecolor='red', linewidth=2, alpha=0.8)
                                 det_ax.add_patch(circle)
                                 det_circles.append(circle)
@@ -308,7 +368,9 @@ def launch_cell_detector(roi_image, image_path, store=None):
         detection_params['prob_thresh'] = slider_prob.val
         detection_params['nms_thresh'] = slider_nms.val
         detection_params['scale'] = slider_scale.val
-        detection_params['min_size'] = slider_min_size.val
+        a_lo, a_hi = slider_area.val
+        detection_params['area_range_px'] = [a_lo / area_factor, a_hi / area_factor]
+        detection_params['fluor_range'] = list(slider_fluor.val)
 
         detect_cells()
 
@@ -319,6 +381,14 @@ def launch_cell_detector(roi_image, image_path, store=None):
 
     def save_cell_detection(event):
         nonlocal detected_cells, detection_params
+        # Sync detection_params with current slider values
+        detection_params['prob_thresh'] = slider_prob.val
+        detection_params['nms_thresh'] = slider_nms.val
+        detection_params['scale'] = slider_scale.val
+        _alo, _ahi = slider_area.val
+        detection_params['area_range_px'] = [_alo / area_factor, _ahi / area_factor]
+        detection_params['fluor_range'] = list(slider_fluor.val)
+
         store_obj = store
         if len(detected_cells) == 0:
             print("No cells detected to save")
@@ -338,6 +408,8 @@ def launch_cell_detector(roi_image, image_path, store=None):
                     'y': float(cell[0]),
                     'radius': float(cell[2]),
                     'area': float(cell[3]),
+                    'area_um2': float(cell[3]) * area_factor if area_factor != 1.0 else None,
+                    'mean_fluorescence': float(cell[4]),
                 }
                 for idx, cell in enumerate(detected_cells, 1)
             ]
@@ -458,7 +530,7 @@ def launch_cell_detector(roi_image, image_path, store=None):
                 circle.set_visible(outlines_visible)
             status = "VISIBLE" if outlines_visible else "HIDDEN"
             det_ax.set_title(
-                f'Cell Detection (StarDist): {len(detected_cells)} cells detected - Outlines {status}',
+                f'Cell Detection (StarDist): {len(detected_cells)}/{len(all_detected)} cells - Outlines {status}',
                 fontsize=14, fontweight='bold',
             )
             det_ax.figure.canvas.draw_idle()
