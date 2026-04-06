@@ -8,11 +8,11 @@ Project layout
 - `main.py`: lightweight entry point that orchestrates the workflow
 - `roi_selector.py`: interactive ROI loader + polygon selection (moved out of `main.py`)
 - `interactive.py`: `InteractivePolygon` class and ROI utilities
-- `detection.py`: interactive Cellpose-based cell detection view
+- `detection.py`: interactive StarDist-based cell detection view
 - `subareas.py`: subarea selection, threshold overlays, and JSON export
 
 Notes
-- `SKIP_CELL_DETECTION` in `main.py` is set to `True` for fast testing; set to `False` to enable Cellpose segmentation (requires `cellpose` and GPU/CPU runtime).
+- `SKIP_CELL_DETECTION` in `main.py` is set to `True` for fast testing; set to `False` to enable StarDist segmentation (requires `stardist` and `tensorflow`).
 - Saved outputs: `*_cells.csv` + `*_settings.csv` (cell detection), `*_subareas.json` (subarea stats), and per-image analysis JSON files containing `roi_polygon`.
 
 Testing and development

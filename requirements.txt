@@ -1,5 +1,6 @@
 numpy
 scikit-image
 matplotlib
-cellpose
+stardist
+tensorflow
 czifile
