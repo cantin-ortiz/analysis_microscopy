@@ -14,7 +14,7 @@ from tkinter import messagebox
 class InteractivePolygon:
     """Interactive polygon selector for ROI selection"""
 
-    def __init__(self, ax, image, image_path, initial_vertices=None, on_extract=None, close_on_extract=True, ignore_enter=False, extra_instructions=None):
+    def __init__(self, ax, image, image_path, initial_vertices=None, on_extract=None, close_on_extract=True, ignore_enter=False, extra_instructions=None, um2_per_pixel=None):
         self.ax = ax
         self.image = image
         self.image_path = image_path
@@ -26,6 +26,8 @@ class InteractivePolygon:
         # Fill toggle state (press 'f' to toggle)
         self.fill_enabled = True
         self.fill_alpha = 0.3
+        # Physical pixel area: µm² per display pixel (for area conversion to mm²)
+        self.um2_per_pixel = um2_per_pixel
         # Colors for face and edge (store separately so edge remains visible)
         self.face_rgb = (1.0, 1.0, 0.0)  # yellow
         self.edgecolor = 'red'
@@ -93,6 +95,9 @@ class InteractivePolygon:
         if len(self.vertices) >= 3:
             area = self.calculate_area()
             instructions += f"\nArea: {area:.1f} pixels²"
+            if self.um2_per_pixel is not None:
+                area_mm2 = area * self.um2_per_pixel / 1e6
+                instructions += f" ({area_mm2:.4f} mm²)"
         if self.extra_instructions:
             instructions += '\n' + self.extra_instructions
         self.text.set_text(instructions)
@@ -318,7 +323,12 @@ class InteractivePolygon:
         print(f"Std intensity: {roi_pixels.std():.2f}")
         print(f"Min intensity: {roi_pixels.min()}")
         print(f"Max intensity: {roi_pixels.max()}")
-        print(f"Polygon area: {self.calculate_area():.1f} pixels²")
+        _area = self.calculate_area()
+        if self.um2_per_pixel is not None:
+            _area_mm2 = _area * self.um2_per_pixel / 1e6
+            print(f"Polygon area: {_area:.1f} pixels² ({_area_mm2:.6f} mm²)")
+        else:
+            print(f"Polygon area: {_area:.1f} pixels²")
         print(f"Cropped image size: {masked_img.shape}")
         
         # Store for later use

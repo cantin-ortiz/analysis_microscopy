@@ -564,6 +564,16 @@ def launch_subarea_selector(image, image_path, roi_mask=None, roi_vertices=None,
     cid_key_sub = fig.canvas.mpl_connect('key_press_event', on_key_sub)
 
     # moved down to avoid overlapping the right-side buttons
+    # Compute um² per pixel for physical-area conversion in subareas
+    sub_um2_per_pixel = None
+    if store is not None:
+        ps = store.get('pixel_size_um')
+        if ps is not None:
+            try:
+                sub_um2_per_pixel = ps['x'] * ps['y']
+            except Exception:
+                pass
+
     ax_info = plt.axes([0.81, 0.46, 0.15, 0.12])
     ax_info.axis('off')
     info_text = ax_info.text(0.01, 0.98,
@@ -584,7 +594,11 @@ def launch_subarea_selector(image, image_path, roi_mask=None, roi_vertices=None,
             thresh = float(slider_thresh.val)
             sel = int(np.count_nonzero((image > thresh) & effective_mask)) if area > 0 else 0
             pct = (sel / area * 100.0) if area > 0 else 0.0
-            info_text.set_text(f"Area: {area} px\nSelected: {sel} px\n% Selected: {pct:.1f}%")
+            area_str = f"Area: {area} px"
+            if sub_um2_per_pixel is not None:
+                area_mm2 = area * sub_um2_per_pixel / 1e6
+                area_str += f" ({area_mm2:.4f} mm²)"
+            info_text.set_text(f"{area_str}\nSelected: {sel} px\n% Selected: {pct:.1f}%")
         except Exception:
             info_text.set_text("Area: -\nSelected: -\n% Selected: -")
         fig.canvas.draw_idle()
@@ -699,8 +713,13 @@ def launch_subarea_selector(image, image_path, roi_mask=None, roi_vertices=None,
             'selected_pixels': selected,
             'percent_selected': round(pct, 2),
             'threshold': thresh,
-            'mean_intensity': mean_int
+            'mean_intensity': mean_int,
         }
+        # Add area in mm² if pixel size is available
+        if sub_um2_per_pixel is not None:
+            payload['area_mm2'] = area_px * sub_um2_per_pixel / 1e6
+        else:
+            payload['area_mm2'] = None
 
         try:
             if store is not None:
