@@ -198,30 +198,92 @@ def prompt_manual_pixel_size(existing_pixel_size=None):
             pre-fill the entry if a value already exists.
 
     Returns:
-        dict with 'x', 'y', 'is_square' keys, or None if the user cancels.
+        dict with 'x', 'y', 'is_square' keys, or None if the user skips/cancels
+        or leaves the field empty.
     """
-    from tkinter import simpledialog
-    root = tk.Tk()
-    root.withdraw()
+    result = {'value': None}
 
-    initial_value = ''
+    # Reuse the existing Tk root when called from inside a matplotlib callback
+    # (TkAgg already owns a Tk instance). Creating a second tk.Tk() puts
+    # StringVar in a different interpreter than the dialog widget, silently
+    # breaking the Entry/textvariable link.
+    _created_root = False
+    try:
+        root = tk._default_root
+        if root is None:
+            raise AttributeError
+    except AttributeError:
+        root = tk.Tk()
+        root.withdraw()
+        _created_root = True
+
+    dlg = tk.Toplevel(root)
+    dlg.title('Pixel size')
+    dlg.resizable(False, False)
+    try:
+        dlg.attributes('-topmost', True)
+    except Exception:
+        pass
+
+    tk.Label(dlg, text='Enter the side length of one pixel in µm\n(square pixels assumed).\nLeave blank or press Skip to proceed without a pixel size.',
+             justify='left', padx=10, pady=8).grid(row=0, column=0, columnspan=3)
+
+    # StringVar must be in the same interpreter as the widgets (root).
+    entry_var = tk.StringVar(master=root)
     if existing_pixel_size is not None:
         try:
-            initial_value = str(existing_pixel_size['x'])
+            entry_var.set(str(existing_pixel_size['x']))
         except Exception:
             pass
 
-    val = simpledialog.askfloat(
-        'Pixel size',
-        'Enter the side length of one pixel in µm\n(square pixels assumed):',
-        initialvalue=float(initial_value) if initial_value else None,
-        minvalue=0.0001,
-        parent=root,
-    )
-    root.destroy()
+    entry = tk.Entry(dlg, textvariable=entry_var, width=20)
+    entry.grid(row=1, column=0, columnspan=3, padx=10, pady=4)
+    entry.focus_set()
+    if existing_pixel_size is not None:
+        entry.select_range(0, tk.END)
 
+    def _ok(event=None):
+        # Use entry.get() directly — reliable regardless of StringVar state.
+        text = entry.get().strip()
+        if text:
+            try:
+                val = float(text)
+                if val > 0:
+                    result['value'] = val
+            except ValueError:
+                pass  # invalid input → treat as skip
+        dlg.destroy()
+
+    def _skip(event=None):
+        dlg.destroy()
+
+    btn_frame = tk.Frame(dlg)
+    btn_frame.grid(row=2, column=0, columnspan=3, pady=8)
+    tk.Button(btn_frame, text='OK', width=8, command=_ok).pack(side='left', padx=6)
+    tk.Button(btn_frame, text='Skip', width=8, command=_skip).pack(side='left', padx=6)
+
+    dlg.bind('<Return>', _ok)
+    dlg.bind('<Escape>', _skip)
+
+    # Centre on screen
+    dlg.update_idletasks()
+    w, h = dlg.winfo_width(), dlg.winfo_height()
+    sw, sh = dlg.winfo_screenwidth(), dlg.winfo_screenheight()
+    dlg.geometry(f'{w}x{h}+{(sw - w) // 2}+{(sh - h) // 2}')
+
+    dlg.grab_set()           # block input to other windows
+    dlg.wait_window(dlg)     # pump events on the correct interpreter
+
+    if _created_root:
+        try:
+            root.destroy()
+        except Exception:
+            pass
+
+    val = result['value']
     if val is not None and val > 0:
         return {'x': val, 'y': val, 'is_square': True}
+    return None
     return None
 
 
