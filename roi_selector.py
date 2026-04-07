@@ -125,36 +125,46 @@ def load_image(image_path):
             image_data = np.squeeze(image_data)
             print(f"After squeeze: {image_data.shape}")
             
-            # If still multi-dimensional after squeeze, we need to be smarter about selection
-            # Common CZI dimension orders: (C, Z, Y, X) or (Z, C, Y, X) or (C, Y, X) etc.
+            # If still multi-dimensional after squeeze, we need to be smarter about selection.
+            # Common CZI dimension orders:
+            #   (Y, X, C) – color image with C=3 or 4  (Bgr24, Bgr48, …)
+            #   (C, Y, X) or (Z, Y, X)               – channel/z-stack first
+            #   (C, Z, Y, X)                          – full 4-D
             if image_data.ndim > 2:
-                # Try to find the 2D image plane
-                # Last two dimensions are typically Y, X (height, width)
-                # If we have more dimensions, try different strategies
-                
-                if image_data.ndim == 3:
-                    # Could be (C, Y, X) or (Z, Y, X)
-                    # Take max projection along first axis if it's small (likely channels/z-stack)
+                if image_data.ndim == 3 and image_data.shape[2] <= 4:
+                    # (Y, X, C) color layout – last axis is the colour channel
+                    print(f"Color CZI image detected: Y={image_data.shape[0]}, X={image_data.shape[1]}, C={image_data.shape[2]}")
+                    # Convert to grayscale (mean across channels; appropriate for
+                    # pseudo-coloured fluorescence data)
+                    image_data = image_data.mean(axis=2).astype(image_data.dtype)
+                    print(f"Converted to grayscale: {image_data.shape}")
+
+                elif image_data.ndim == 3:
+                    # (C, Y, X) or (Z, Y, X) – first axis is channel or z
                     if image_data.shape[0] <= 10:
                         print(f"Taking max projection along axis 0 (size {image_data.shape[0]})")
                         image_data = np.max(image_data, axis=0)
                     else:
-                        # First dimension is likely spatial, take the middle slice
                         mid_idx = image_data.shape[0] // 2
                         print(f"Taking middle slice {mid_idx} from axis 0")
                         image_data = image_data[mid_idx]
-                        
+
                 elif image_data.ndim == 4:
-                    # Could be (C, Z, Y, X) - take max projection over Z, first channel
-                    print(f"4D data: taking max projection")
-                    # Take first channel
-                    image_data = image_data[0]
-                    # Max project over remaining axis if not 2D yet
-                    if image_data.ndim > 2:
+                    # Could be (C, Z, Y, X) or (Z, C, Y, X)
+                    # Check if last dim is colour channel
+                    if image_data.shape[3] <= 4:
+                        print(f"4-D color CZI: {image_data.shape} – taking mean over channel axis")
+                        image_data = image_data.mean(axis=3).astype(image_data.dtype)
+                        # Now (C/Z, Y, X) – reduce further
                         image_data = np.max(image_data, axis=0)
-                        
+                    else:
+                        print(f"4-D data: taking max projection")
+                        image_data = image_data[0]
+                        if image_data.ndim > 2:
+                            image_data = np.max(image_data, axis=0)
+
                 else:
-                    # For higher dimensions, keep reducing
+                    # Higher-dimensional: keep reducing from the front
                     while image_data.ndim > 2:
                         image_data = image_data[0]
             
