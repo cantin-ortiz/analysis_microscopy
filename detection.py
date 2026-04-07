@@ -4,24 +4,30 @@ Cell detection (StarDist) module
 import numpy as np
 from matplotlib import pyplot as plt
 from matplotlib.patches import Circle
-from matplotlib.widgets import Slider, Button, RangeSlider
+from matplotlib.widgets import Slider, Button, RangeSlider, RadioButtons
 import os
 import tkinter as tk
 from tkinter import messagebox
 
-# Module-level StarDist model cache
-STARDIST_MODEL = None
+# Available pretrained models: display label → StarDist model name
+STARDIST_MODELS = {
+    'Soma (fluorescence)': '2D_versatile_fluo',
+    'Nuclei (DSB 2018)':   '2D_paper_dsb2018',
+}
+
+# Per-model cache so switching back never re-downloads
+STARDIST_MODEL_CACHE: dict = {}
 
 
-def _load_stardist_model():
-    """Lazily load (and cache) the StarDist 2D fluorescence model."""
-    global STARDIST_MODEL
-    if STARDIST_MODEL is None:
-        print("Loading StarDist model (first run may download weights)...")
+def _load_stardist_model(model_name: str = '2D_versatile_fluo'):
+    """Lazily load (and cache) a StarDist 2D pretrained model by name."""
+    global STARDIST_MODEL_CACHE
+    if model_name not in STARDIST_MODEL_CACHE:
+        print(f"Loading StarDist model '{model_name}' (first run may download weights)...")
         from stardist.models import StarDist2D
-        STARDIST_MODEL = StarDist2D.from_pretrained('2D_versatile_fluo')
-        print("StarDist model '2D_versatile_fluo' loaded successfully")
-    return STARDIST_MODEL
+        STARDIST_MODEL_CACHE[model_name] = StarDist2D.from_pretrained(model_name)
+        print(f"StarDist model '{model_name}' loaded successfully")
+    return STARDIST_MODEL_CACHE[model_name]
 
 
 def launch_cell_detector(roi_image, image_path, store=None, um2_per_pixel=None):
@@ -175,7 +181,7 @@ def launch_cell_detector(roi_image, image_path, store=None, um2_per_pixel=None):
             c.remove()
         all_circles = []
 
-        model = _load_stardist_model()
+        model = _load_stardist_model(selected_model_name[0])
 
         from csbdeep.utils import normalize
         img_norm = normalize(det_image, 1, 99.8)
@@ -285,6 +291,17 @@ def launch_cell_detector(roi_image, image_path, store=None, um2_per_pixel=None):
                             detection_params['area_range_px'][0] = saved_settings['min_size']
                         if 'fluor_range' in saved_settings:
                             detection_params['fluor_range'] = saved_settings['fluor_range']
+                        if 'stardist_model' in saved_settings:
+                            saved_model = saved_settings['stardist_model']
+                            detection_params['stardist_model'] = saved_model
+                            selected_model_name[0] = saved_model
+                            # Update the radio button to reflect the saved model
+                            reverse = {v: k for k, v in STARDIST_MODELS.items()}
+                            if saved_model in reverse:
+                                try:
+                                    radio_model.set_active(model_labels.index(reverse[saved_model]))
+                                except Exception:
+                                    pass
 
                     # Apply settings to sliders
                     try:
@@ -347,13 +364,29 @@ def launch_cell_detector(roi_image, image_path, store=None, um2_per_pixel=None):
     except Exception:
         loaded_from_store = False
 
-    # ---- Buttons -------------------------------------------------------------
+    # Buttons
     ax_detect = plt.axes([0.80, 0.90, 0.15, 0.05])
     ax_help = plt.axes([0.80, 0.82, 0.15, 0.05])
     ax_save = plt.axes([0.80, 0.74, 0.15, 0.05])
     btn_detect = Button(ax_detect, 'Recompute')
     btn_help = Button(ax_help, 'Hide Help')
     btn_save = Button(ax_save, 'Save Results')
+
+    # Model selector (RadioButtons)
+    model_labels = list(STARDIST_MODELS.keys())
+    ax_model = plt.axes([0.795, 0.55, 0.17, 0.13])
+    ax_model.set_title('Model', fontsize=8, pad=2)
+    radio_model = RadioButtons(ax_model, model_labels, active=0)
+    for lbl in radio_model.labels:
+        lbl.set_fontsize(8)
+
+    selected_model_name = [STARDIST_MODELS[model_labels[0]]]  # mutable container
+
+    def _on_model_select(label):
+        selected_model_name[0] = STARDIST_MODELS[label]
+        print(f"Model switched to '{selected_model_name[0]}' — press Recompute to apply")
+
+    radio_model.on_clicked(_on_model_select)
 
     def update_detection(val):
         nonlocal detection_params
@@ -370,6 +403,7 @@ def launch_cell_detector(roi_image, image_path, store=None, um2_per_pixel=None):
         a_lo, a_hi = slider_area.val
         detection_params['area_range_px'] = [a_lo / area_factor, a_hi / area_factor]
         detection_params['fluor_range'] = list(slider_fluor.val)
+        detection_params['stardist_model'] = selected_model_name[0]
 
         detect_cells()
 
@@ -387,6 +421,7 @@ def launch_cell_detector(roi_image, image_path, store=None, um2_per_pixel=None):
         _alo, _ahi = slider_area.val
         detection_params['area_range_px'] = [_alo / area_factor, _ahi / area_factor]
         detection_params['fluor_range'] = list(slider_fluor.val)
+        detection_params['stardist_model'] = selected_model_name[0]
 
         store_obj = store
         if len(detected_cells) == 0:
