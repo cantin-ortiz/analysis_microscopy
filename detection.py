@@ -90,9 +90,9 @@ def launch_cell_detector(roi_image, image_path, store=None, um2_per_pixel=None):
     det_image = roi_image
     det_ax = ax
     det_im = ax.imshow(roi_image, cmap='gray', vmin=image_min, vmax=image_max)
-    det_circles = []
+    all_circles = []   # one Circle patch per entry in all_detected, always in axes
     outlines_visible = True
-    detected_cells = np.empty((0, 5))   # (y, x, r, area_px, mean_intensity)
+    detected_cells = np.empty((0, 5))   # (y, x, r, area_px, mean_intensity) — filtered subset
     all_detected = []                    # all regions before area/fluor filtering
 
     # Brightness slider (left side)
@@ -136,11 +136,9 @@ def launch_cell_detector(roi_image, image_path, store=None, um2_per_pixel=None):
 
     # ---- StarDist detection + filtering --------------------------------------
     def apply_filters():
-        """Filter all_detected by area- and fluorescence-range sliders."""
-        nonlocal det_circles, detected_cells
-        for circle in det_circles:
-            circle.remove()
-        det_circles = []
+        """Instantly show/hide existing circles based on area and fluorescence sliders.
+        No patches are added or removed — only set_visible() is called."""
+        nonlocal detected_cells
 
         # Area range (display units → pixels)
         area_lo_disp, area_hi_disp = slider_area.val
@@ -150,20 +148,15 @@ def launch_cell_detector(roi_image, image_path, store=None, um2_per_pixel=None):
         fluor_lo, fluor_hi = slider_fluor.val
 
         filtered = []
-        for y, x, r, area_px, mean_int in all_detected:
-            if area_lo_px <= area_px <= area_hi_px and fluor_lo <= mean_int <= fluor_hi:
+        for circle, (y, x, r, area_px, mean_int) in zip(all_circles, all_detected):
+            passes = (area_lo_px <= area_px <= area_hi_px
+                      and fluor_lo <= mean_int <= fluor_hi)
+            circle._in_filter = passes
+            circle.set_visible(outlines_visible and passes)
+            if passes:
                 filtered.append((y, x, r, area_px, mean_int))
 
         detected_cells = np.array(filtered) if filtered else np.empty((0, 5))
-
-        for cell in filtered:
-            circle = Circle((cell[1], cell[0]), cell[2],
-                            fill=False, edgecolor='red', linewidth=2, alpha=0.8)
-            det_ax.add_patch(circle)
-            det_circles.append(circle)
-
-        for circle in det_circles:
-            circle.set_visible(outlines_visible)
 
         status = "VISIBLE" if outlines_visible else "HIDDEN"
         det_ax.set_title(
@@ -174,8 +167,13 @@ def launch_cell_detector(roi_image, image_path, store=None, um2_per_pixel=None):
         fig.canvas.draw_idle()
 
     def detect_cells():
-        """Run StarDist segmentation, populate all_detected, then filter."""
-        nonlocal all_detected
+        """Run StarDist segmentation, rebuild all_circles once, then filter."""
+        nonlocal all_detected, all_circles
+
+        # Remove circles from any previous run
+        for c in all_circles:
+            c.remove()
+        all_circles = []
 
         model = _load_stardist_model()
 
@@ -200,6 +198,13 @@ def launch_cell_detector(roi_image, image_path, store=None, um2_per_pixel=None):
             y, x = region.centroid
             r = np.sqrt(region.area / np.pi)
             all_detected.append((y, x, r, float(region.area), float(region.mean_intensity)))
+
+        # Create one Circle patch per detected cell.
+        # Visibility is toggled by apply_filters() — no patches are ever removed during filtering.
+        for y, x, r, _, _ in all_detected:
+            circle = Circle((x, y), r, fill=False, edgecolor='red', linewidth=2, alpha=0.8)
+            det_ax.add_patch(circle)
+            all_circles.append(circle)
 
         apply_filters()
         n_filt = len(detected_cells)
@@ -314,34 +319,28 @@ def launch_cell_detector(roi_image, image_path, store=None, um2_per_pixel=None):
 
                     # Render loaded detections (no StarDist run)
                     def render_loaded_cells():
-                        nonlocal det_circles
-                        for c in det_circles:
+                        nonlocal all_circles
+                        for c in all_circles:
                             try:
                                 c.remove()
                             except Exception:
                                 pass
-                        det_circles = []
-                        for row in (detected_cells if detected_cells.size else []):
+                        all_circles = []
+                        for row in (all_detected if all_detected else []):
                             try:
                                 y, x, r = float(row[0]), float(row[1]), float(row[2])
                                 circle = Circle((x, y), r, fill=False, edgecolor='red', linewidth=2, alpha=0.8)
                                 det_ax.add_patch(circle)
-                                det_circles.append(circle)
+                                all_circles.append(circle)
                             except Exception:
                                 pass
-                        for circle in det_circles:
-                            circle.set_visible(outlines_visible)
-                        status = "VISIBLE" if outlines_visible else "HIDDEN"
-                        det_ax.set_title(
-                            f'Cell Detection (Loaded): {len(det_circles)} cells - Outlines {status}',
-                            fontsize=14, fontweight='bold',
-                        )
-                        det_ax.axis('off')
+                        apply_filters()
                         try:
                             det_ax.figure.canvas.draw_idle()
                         except Exception:
                             pass
-                        print(f"\nLoaded {len(det_circles)} cells from AnalysisStore")
+                        print(f"\nLoaded {len(all_detected)} cells from AnalysisStore "
+                              f"({len(detected_cells)} pass current filters)")
 
                     render_loaded_cells()
                     loaded_from_store = True
@@ -526,11 +525,12 @@ def launch_cell_detector(roi_image, image_path, store=None, um2_per_pixel=None):
         nonlocal outlines_visible
         if event.key == 'h':
             outlines_visible = not outlines_visible
-            for circle in det_circles:
-                circle.set_visible(outlines_visible)
+            for circle in all_circles:
+                circle.set_visible(outlines_visible and getattr(circle, '_in_filter', True))
+            n = int(detected_cells.shape[0]) if detected_cells.size else 0
             status = "VISIBLE" if outlines_visible else "HIDDEN"
             det_ax.set_title(
-                f'Cell Detection (StarDist): {len(detected_cells)}/{len(all_detected)} cells - Outlines {status}',
+                f'Cell Detection (StarDist): {n}/{len(all_detected)} cells - Outlines {status}',
                 fontsize=14, fontweight='bold',
             )
             det_ax.figure.canvas.draw_idle()
